@@ -21,7 +21,7 @@ version: [demo.gif](docs/media/demo.gif).*
 
 > **Pre-release.** Messages, calls on a locked phone, the voice AI, calling your agent
 > from the app and the MCP server all work. So far it has been tested on one phone
-> (Pixel 6, Android 16). Android only for now.
+> (Pixel 6, Android 16). Android is hardware-tested; an [iOS development preview](docs/ios.md) is available in source.
 
 ## What it does
 
@@ -123,10 +123,16 @@ agents you'd trust someone holding your phone with. Details and the threat model
 
 ## Limitations
 
-- Android only (no iOS yet).
+- iOS support is a source-build preview; real-device validation is still required (see [iOS setup](docs/ios.md)).
 - One user per relay: no accounts.
 - The voice AI uses Gemini Live; other realtime backends plug in through
   [`RealtimeBackend`](docs/voice.md).
+
+## iOS preview
+
+A native SwiftUI iPhone companion and APNs relay transport are included in source.
+Build with Xcode and your Apple signing/push credentials; see [docs/ios.md](docs/ios.md).
+The Android quickstart above remains unchanged.
 
 ## Development
 

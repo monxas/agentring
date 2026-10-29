@@ -203,3 +203,14 @@ CI fails if generated code is stale or a fixture doesn't round-trip.
   A slow agent's answer reaches the call as a note, or the phone as a message once
   the call is over.
 
+
+## iOS companion preview
+
+The native SwiftUI client under `app-ios` uses the same relay REST and resumable
+WebSocket protocol as Android. Apple PushKit and CallKit provide incoming call
+wake-up and the native call UI; LiveKit Swift carries audio. APNs HTTP/2 with ES256
+token authentication is implemented alongside FCM using Node built-ins and the
+existing jose dependency. Apple credentials stay on the relay. SQLite stores
+separate APNs alert/VoIP tokens and environment for each device. The iOS transport
+is additive: existing Android devices and the daemon require no changes.
+See [ios.md](ios.md) for setup, security properties and hardware validation status.

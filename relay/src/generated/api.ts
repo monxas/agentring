@@ -94,6 +94,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/device/apns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Replace the iOS device's APNs alert and PushKit VoIP tokens.
+         * @description iOS only. Null clears a token; environment must match the app signing profile.
+         */
+        post: operations["updateApnsTokens"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/devices": {
         parameters: {
             query?: never;
@@ -506,7 +526,7 @@ export interface components {
             fcm_token?: string;
             device_name: string;
             /** @enum {string} */
-            platform: "android";
+            platform: "android" | "ios";
             app_version?: string;
         };
         PairResponse: {
@@ -540,7 +560,7 @@ export interface components {
             device_id: components["schemas"]["DeviceId"];
             name: string;
             /** @enum {string} */
-            platform: "android";
+            platform: "android" | "ios";
             app_version?: string;
             created_at: components["schemas"]["Timestamp"];
             last_seen_at?: components["schemas"]["Timestamp"];
@@ -1002,6 +1022,36 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    updateApnsTokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    alert_token: string | null;
+                    voip_token: string | null;
+                    /** @enum {string} */
+                    environment: "sandbox" | "production";
+                };
+            };
+        };
+        responses: {
+            /** @description Updated. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     listDevices: {

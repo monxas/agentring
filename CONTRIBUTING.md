@@ -10,6 +10,7 @@ approach. Security problems: see [SECURITY.md](SECURITY.md), not public issues.
 protocol/       relay.openapi.yaml (REST + event schemas), examples/ (event fixtures, push signature vector)
 relay/          TypeScript, Fastify 5, node:sqlite, jose, livekit-server-sdk; FCM HTTP v1 without firebase-admin
 daemon/         Python ≥ 3.11 + uv; the `agentring` CLI and the `agentring.voice` library
+app-ios/        SwiftUI iPhone preview, Swift protocol core, CallKit/PushKit and LiveKit
 app-android/    :core = pure Kotlin/JVM (protocol models, PushVerifier, RelayApi, RelaySocket, RelayUrlPolicy)
                 :app  = Compose / Material 3 app, package dev.agentring.app, minSdk 26, targetSdk 35
 deploy/         docker compose files, Caddyfile, LiveKit config, .env.example
@@ -39,6 +40,10 @@ cd app-android && ./gradlew -PcoreOnly :core:test   # when Google's Maven is unr
 - CI (`.github/workflows/`) runs the relay and daemon tests, a docker compose
   smoke test, and builds the APK and runs an end-to-end test on an Android
   emulator against a real relay.
+
+iOS: `cd app-ios && swift test`; build `AgentRing.xcodeproj` with Xcode 16.3+.
+See [docs/ios.md](docs/ios.md) for signing, Apple push setup and hardware checks.
+The iOS workflow builds an unsigned simulator app and tests the protocol core.
 
 ## Protocol first
 

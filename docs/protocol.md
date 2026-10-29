@@ -320,3 +320,19 @@ Bound to `127.0.0.1:7878` by default, `Authorization: Bearer <local key>`.
 | GET | `/calls/{id}` | | `{call_id, status, duration_ms?, summary?, transcript?}` |
 
 The MCP streamable-HTTP transport is mounted on the same server at `/mcp`.
+
+## iOS transport extension
+
+PairRequest and Device accept `platform: ios`. iOS pairing returns `push_config: null`
+because Apple push registration uses the app's signing entitlements. A paired iOS
+device replaces its APNs tokens with `POST /v1/device/apns` (device JWT):
+`{alert_token: string|null, voip_token: string|null, environment: sandbox|production}`.
+Null clears a token. Android and agent credentials cannot register APNs tokens.
+Revocation clears both tokens. `has_push_token` includes either Apple token.
+
+Only agent-to-user `call.invite` goes to the VoIP token; agent messages go to the
+alert token. Both carry the existing signed PushData fields as APNs custom keys.
+All remaining events use the existing authenticated WebSocket. APNs expiration is
+zero. Token environment is stored per device so development and production builds
+can coexist. Targeted-call filtering applies before dispatch to either transport.
+See [iOS setup](ios.md) for CallKit behavior and preview limitations.

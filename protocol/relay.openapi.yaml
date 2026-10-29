@@ -128,6 +128,31 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /v1/device/apns:
+    post:
+      tags: [devices]
+      operationId: updateApnsTokens
+      summary: Replace the iOS device's APNs alert and PushKit VoIP tokens.
+      description: iOS only. Null clears a token; environment must match the app signing profile.
+      security: [{ deviceJwt: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [alert_token, voip_token, environment]
+              properties:
+                alert_token: { type: [string, "null"], pattern: "^[a-fA-F0-9]{64,200}$" }
+                voip_token: { type: [string, "null"], pattern: "^[a-fA-F0-9]{64,200}$" }
+                environment: { type: string, enum: [sandbox, production] }
+      responses:
+        "204": { description: Updated. }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
   /v1/devices:
     get:
       tags: [devices]
@@ -713,7 +738,7 @@ components:
           type: string
           maxLength: 4096
         device_name: { type: string, minLength: 1, maxLength: 64 }
-        platform: { type: string, enum: [android] }
+        platform: { type: string, enum: [android, ios] }
         app_version: { type: string, maxLength: 32 }
     PairResponse:
       type: object
@@ -753,7 +778,7 @@ components:
       properties:
         device_id: { $ref: "#/components/schemas/DeviceId" }
         name: { type: string }
-        platform: { type: string, enum: [android] }
+        platform: { type: string, enum: [android, ios] }
         app_version: { type: string }
         created_at: { $ref: "#/components/schemas/Timestamp" }
         last_seen_at: { $ref: "#/components/schemas/Timestamp" }

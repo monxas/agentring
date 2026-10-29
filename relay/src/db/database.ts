@@ -78,6 +78,9 @@ const MIGRATIONS: string[] = [
   -- Targeted calls: JSON array of the device ids the call rings; NULL = every paired phone.
   ALTER TABLE calls ADD COLUMN device_ids TEXT;
   `,
+  `ALTER TABLE devices ADD COLUMN apns_alert_token TEXT;
+   ALTER TABLE devices ADD COLUMN apns_voip_token TEXT;
+   ALTER TABLE devices ADD COLUMN apns_environment TEXT NOT NULL DEFAULT 'sandbox';`,
 ];
 
 export type Db = DatabaseSync;

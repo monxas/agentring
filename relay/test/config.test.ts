@@ -41,3 +41,17 @@ describe("LiveKit config", () => {
     expect(() => loadConfig()).toThrow(/at least 32/);
   });
 });
+
+describe("APNs config", () => {
+  it("requires all Apple configuration values together", () => {
+    baseEnv();
+    for (const name of ["APNS_KEY_FILE", "APNS_KEY_ID", "APNS_TEAM_ID", "APNS_BUNDLE_ID"]) delete process.env[name];
+    expect(loadConfig().apns).toBeUndefined();
+    process.env.APNS_KEY_FILE = "/secrets/AuthKey.p8";
+    expect(() => loadConfig()).toThrow(/APNS_KEY_ID/);
+    process.env.APNS_KEY_ID = "KEY123";
+    process.env.APNS_TEAM_ID = "TEAM123";
+    process.env.APNS_BUNDLE_ID = "dev.example.agentring";
+    expect(loadConfig().apns).toEqual({ keyFile: "/secrets/AuthKey.p8", keyId: "KEY123", teamId: "TEAM123", bundleId: "dev.example.agentring" });
+  });
+});

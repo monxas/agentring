@@ -19,6 +19,7 @@ export interface Config {
   ringTimeoutS: number;
   insecureDev: boolean;
   livekit?: LiveKitConfig;
+  apns?: { keyFile: string; keyId: string; teamId: string; bundleId: string };
   fcm?: {
     serviceAccountFile: string;
     client: FcmClientConfig;
@@ -96,6 +97,17 @@ export function loadConfig(): Config {
     };
   }
 
+  let apns: Config["apns"];
+  const apnsKey = env("APNS_KEY_FILE");
+  const apnsKeyId = env("APNS_KEY_ID");
+  const apnsTeam = env("APNS_TEAM_ID");
+  const apnsBundle = env("APNS_BUNDLE_ID");
+  if (apnsKey || apnsKeyId || apnsTeam || apnsBundle) {
+    if (!apnsKey || !apnsKeyId || !apnsTeam || !apnsBundle)
+      throw new Error("Set APNS_KEY_FILE, APNS_KEY_ID, APNS_TEAM_ID and APNS_BUNDLE_ID together");
+    apns = { keyFile: apnsKey, keyId: apnsKeyId, teamId: apnsTeam, bundleId: apnsBundle };
+  }
+
   let livekit: LiveKitConfig | undefined;
   const lkKey = env("LIVEKIT_API_KEY");
   // Prefer a file (mounted read-only) so the secret never sits in the environment,
@@ -126,6 +138,7 @@ export function loadConfig(): Config {
     ringTimeoutS: Number(env("AGENTRING_RING_TIMEOUT_S", "30")),
     insecureDev,
     fcm,
+    apns,
     livekit,
   };
 }

@@ -27,3 +27,11 @@ uv.lock.bak
 !.env.local.example
 service-account*.json
 *-firebase-adminsdk-*.json
+
+# Apple build products and signing keys
+.build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.p8
+*.mobileprovision

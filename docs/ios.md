@@ -1,0 +1,147 @@
+# iOS companion (preview)
+
+`app-ios/AgentRing.xcodeproj` contains the native SwiftUI iPhone app (iOS 16+).
+It pairs with the existing QR payload, stores device credentials in the Keychain,
+reads and replies to messages, and uses CallKit, PushKit and LiveKit for voice calls.
+The daemon and agent integrations are unchanged. The relay supports Android and iOS
+at the same time; iOS-only installations do not need Firebase.
+
+This is a development preview: the relay and Swift protocol core have automated
+tests, but the complete app must still be built and verified on an actual iPhone.
+Do not treat locked-phone ringing or audio as hardware-validated yet.
+
+## Apple setup
+
+1. Use Xcode 16.3 or later. Complete Xcode's first-run setup and accept its license
+   yourself if prompted. Open `app-ios/AgentRing.xcodeproj`.
+2. Select the AgentRing target, choose your signing team, and change the bundle
+   identifier to one registered in your Apple Developer account. Enable Push
+   Notifications for that identifier. The project already declares audio, VoIP
+   and remote-notification background modes.
+3. Configure an APNs signing key in the Apple Developer portal for the app. Keep
+   the downloaded `.p8` private. Record its key ID and your team ID. Background
+   push testing requires the appropriate Apple Developer membership and a real
+   device with a matching provisioning profile.
+4. The Debug build uses the APNs sandbox (`aps-environment=development`); Release
+   uses production. `APNSEnvironment` in Info.plist supplies the corresponding
+   relay registration value. If you change signing profiles, keep both values
+   aligned. TestFlight and distribution builds use production.
+5. Run on your iPhone. Allow microphone and notification access when pairing.
+   Camera access is used only for QR scanning. Alternatively paste the raw QR JSON.
+
+The app requires HTTPS with a trusted certificate for the relay and WSS for
+LiveKit. For local development, put a trusted TLS proxy in front of the existing
+local compose stack. The Android-only HTTP LAN shortcut is not enabled on iOS.
+
+## Relay setup
+
+Upgrade the relay with this branch. Its SQLite migration preserves existing
+Android devices. Existing API endpoints and FCM routing continue to work.
+
+Mount your key read-only into the relay container (the compose files already mount
+`/secrets`) and add the following to its environment or compose `.env`:
+
+```dotenv
+APNS_KEY_FILE=/secrets/AuthKey_EXAMPLE.p8
+APNS_KEY_ID=EXAMPLE123
+APNS_TEAM_ID=TEAM123456
+APNS_BUNDLE_ID=your.registered.bundle.identifier
+```
+
+The bundle identifier must match the app exactly. The relay uses the `.voip` topic
+suffix automatically for incoming-call pushes. Keep the `.p8` out of git and app
+bundles. The key file must be readable by the relay container user. Restart the
+relay after setting the environment. For an iOS-only installation, leave the FCM
+variables empty (remove the hard-coded FCM entries in the proxy compose variant).
+LiveKit still needs its existing server URL, API credentials and working media ports.
+
+## Try it
+
+```bash
+agentring pair
+# Scan the QR with the iPhone app.
+agentring msg "Hello iPhone"
+agentring call "Testing the iOS companion" --ai
+```
+
+The app's settings menu shows push registration status. Confirm that it says
+`VoIP token registered`, and that `/v1/status` reports `apns` (or `fcm+apns`).
+Run `agentring serve --ai` to receive calls placed with the app's **Call agent**
+button. Messages can be replied to in the app; long-press a message to reply to
+that specific message. Reading a message sends its read receipt.
+
+Before relying on it, verify on an actual device:
+
+- Lock the iPhone, let the app leave the foreground, and trigger an agent call.
+  Answer from the system call UI; check two-way audio.
+- Mute/unmute, route to speaker/Bluetooth, and hang up from both ends.
+- Cancel before answering, let a call time out, and decline a call.
+- Call the agent from the app, including agent-offline and busy cases.
+- Reconnect Wi-Fi/cellular and reopen the app; confirm message catch-up.
+- Use a targeted call with another Android/iOS phone and confirm privacy.
+- Revoke the iPhone using the existing agent device-revocation API; no further
+  pushes should be sent and API requests must fail authentication.
+
+CallKit respects the device's Focus/Do Not Disturb settings; an urgent agentring
+priority does not override them. This preview does not provide notification
+inline replies, an in-app join button for an already active group call, CallKit
+Recents redial, or App Store distribution assets.
+
+## Transport and security
+
+Apple requires each delivered VoIP push to be reported promptly to CallKit.
+Only `call.invite` is sent over the VoIP channel. Cancellation, acceptance, end
+and missed-call events use the resumable authenticated WebSocket established
+when the call arrives. A local expiry timer dismisses an unanswered incoming
+call even if the socket drops. APNs expiration is zero, so calls are not queued
+for delivery after the phone reconnects. The app reconciles state through REST
+on reconnection. Multiple paired phones may answer according to the relay's
+existing group-call rules.
+
+The relay sends messages through ordinary APNs alert notifications. Custom fields
+carry the same HMAC-signed event envelope as Android. Incoming VoIP envelopes
+are verified against the paired relay and secret before handling the call.
+An invalid, stale or duplicate VoIP payload is reported to CallKit and immediately
+ended (or rejected by CallKit as an existing UUID) to satisfy PushKit's reporting
+contract. Ordinary notification previews are displayed by iOS; this app has no
+notification service extension to verify signatures before that display.
+
+Credentials use `AfterFirstUnlockThisDeviceOnly` Keychain accessibility so a
+legitimate VoIP wake can read them while locked after the first device unlock.
+The app rejects cleartext URLs, URL credentials and HTTP redirects. LiveKit tokens
+are fetched only after the user answers and are never placed in push payloads.
+
+References: [Apple PushKit/CallKit requirements](https://developer.apple.com/documentation/pushkit/responding-to-voip-notifications-from-pushkit),
+[LiveKit audio configuration](https://github.com/livekit/client-sdk-swift/blob/2.19.0/Docs/audio.md).
+
+## Development checks
+
+```bash
+cd relay && npm ci && npm run typecheck && npm test && npm run build
+cd app-ios && swift test
+xcodebuild -project AgentRing.xcodeproj -scheme AgentRing \
+  -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+```
+
+The core Swift package tests use the shared protocol event fixtures and HMAC
+signature vector. Relay tests cover APNs HTTP/2 headers and provider JWTs, token
+rotation/revocation, platform validation and targeted calls. Simulator builds do
+not validate background VoIP delivery, CallKit timing or microphone routing.
+
+LiveKit Swift is pinned to 2.19.0 despite being less than two weeks old because
+that release updates WebRTC to remove compromised eMudhra roots. See its
+[release notes](https://github.com/livekit/client-sdk-swift/releases/tag/2.19.0).
+
+### Local validation (2026-10-29)
+
+- Relay: typecheck/build passed; 49 tests passed, including 13 new APNs/iOS tests
+  plus the APNs configuration test.
+- Daemon: 37 tests passed, 2 live-service tests skipped.
+- Swift protocol core: compiled successfully; all 3 XCTest cases passed using
+  Xcode's XCTest runner with the Command Line Tools SDK.
+- App Swift sources passed the compiler's syntax parsing; project and property
+  lists passed `plutil -lint`. These checks do not replace compiling/linking the app.
+- Relay production dependency audit: zero reported vulnerabilities (`npm audit --omit=dev`).
+- Full simulator build could not run: Xcode exits 69 because its license has not
+  been accepted. No signing profile, Apple push credentials or iPhone was used.
+- The iOS CI workflow is included but has not been run remotely.

@@ -1,13 +1,14 @@
 /**
- * Transport-agnostic push interface. FCM is the only implementation in F1;
- * UnifiedPush can be added later without touching the dispatcher.
+ * Transport-agnostic push interface shared by FCM (Android) and APNs (iOS).
  */
 export interface PushTarget {
   deviceId: string;
   token: string;
+  environment?: "sandbox" | "production";
+  channel?: "alert" | "voip";
 }
 
-/** String map delivered to the app (FCM `data`). See `PushData` in the OpenAPI. */
+/** Signed string map delivered as FCM `data` or APNs custom payload fields. See `PushData` in the OpenAPI. */
 export type PushPayload = Record<string, string>;
 
 export interface PushOptions {

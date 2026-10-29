@@ -41,7 +41,9 @@ No pipeline, satellites, speakers, HA model settings or exposed-entity lists are
 Run `agentring serve --ai --agents none`, or `agentring call "Reason" --ai --agents none`.
 This backend owns its greeting, and HA owns the conversation prompt/model/tools:
 `--instructions`, `--mcp`, `--tools`, `--model`, `--voice` and agent consultation
-configuration are rejected rather than silently ignored. Gemini remains the default
+configuration are rejected rather than silently ignored. MCP outgoing calls also
+use this backend, but reject a separate `context` argument: include the request in
+the spoken `reason`; the HA agent retains its own context and tools. Gemini remains the default
 when `AGENTRING_VOICE_BACKEND` is absent or `gemini`.
 
 Audio uses PCM16 mono, 16kHz into Assist and 24kHz out to LiveKit. A local energy gate

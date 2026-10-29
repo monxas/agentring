@@ -10,7 +10,6 @@ import signal
 import sys
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Annotated, Any, Optional
 
 import segno
@@ -75,16 +74,9 @@ async def _build_ai(instructions: str | None, mcp: list[str] | None, tools: str 
         if (instructions or mcp or tools or model or voice or agents_file not in (None, "none")
                 or (agents_file is None and (home_dir() / "agents.yaml").exists())):
             raise _fail("Home Assistant owns its prompt/model/tools/voice; omit these options and use --agents none")
-        from .voice.quick import build_home_assistant_agent
-
-        url, token_file, pipeline, tts_host = (secret(k) for k in
-            ("HA_URL", "HA_TOKEN_FILE", "HA_PIPELINE_ID", "WYOMING_TTS_HOST"))
-        if not all((url, token_file, pipeline, tts_host)):
-            raise _fail("Home Assistant needs HA_URL, HA_TOKEN_FILE, HA_PIPELINE_ID and WYOMING_TTS_HOST")
+        from .voice.quick import configured_home_assistant_agent
         try:
-            return build_home_assistant_agent(url, Path(token_file).read_text().strip(), pipeline,
-                tts_host=tts_host, tts_port=int(secret("WYOMING_TTS_PORT") or "10205"),
-                tts_voice=secret("WYOMING_TTS_VOICE") or "")
+            return configured_home_assistant_agent()
         except (OSError, ValueError):
             raise _fail("Cannot load Home Assistant voice configuration") from None
     if backend != "gemini":

@@ -66,6 +66,19 @@ def build_home_assistant_agent(url: str, token: str, pipeline: str, *, tts_host:
                           tts_port=tts_port, tts_voice=tts_voice), "", prompts=prompts), [])
 
 
+def configured_home_assistant_agent() -> BuiltAgent:
+    """Shared CLI/MCP configuration; the HA token never goes into the environment."""
+    from ..config import secret
+
+    url, token_file, pipeline, tts_host = (secret(k) for k in
+        ("HA_URL", "HA_TOKEN_FILE", "HA_PIPELINE_ID", "WYOMING_TTS_HOST"))
+    if not all((url, token_file, pipeline, tts_host)):
+        raise ValueError("Home Assistant needs HA_URL, HA_TOKEN_FILE, HA_PIPELINE_ID and WYOMING_TTS_HOST")
+    return build_home_assistant_agent(url, Path(token_file).read_text().strip(), pipeline,
+        tts_host=tts_host, tts_port=int(secret("WYOMING_TTS_PORT") or "10205"),
+        tts_voice=secret("WYOMING_TTS_VOICE") or "")
+
+
 async def build_agent(
     api_key: str,
     *,

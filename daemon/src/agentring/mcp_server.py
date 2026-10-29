@@ -129,11 +129,16 @@ class AgentringTools:
         try:
             from .voice import CallInfo
             from .voice.agents import AgentsConfigError, load_agents
-            from .voice.quick import DEFAULT_INSTRUCTIONS, build_agent, missed_call_message
+            from .voice.quick import DEFAULT_INSTRUCTIONS, build_agent, configured_home_assistant_agent, missed_call_message
         except ImportError:
             raise ToolError("voice support is not installed: install agentring with the [voice] extra") from None
         key = secret("GEMINI_API_KEY")
-        if not key:
+        backend = secret("AGENTRING_VOICE_BACKEND") or "gemini"
+        if backend not in ("gemini", "homeassistant"):
+            raise ToolError("Unknown configured voice backend")
+        if backend == "homeassistant" and (context or (home_dir() / "agents.yaml").exists()):
+            raise ToolError("Home Assistant manages its own context/tools; put the spoken request in reason, omit context and agents.yaml")
+        if backend == "gemini" and not key:
             raise ToolError("calls need GEMINI_API_KEY (environment or ~/.agentring/.env)")
         agents = None
         if (home_dir() / "agents.yaml").exists():
@@ -147,7 +152,11 @@ class AgentringTools:
         if self._call_lock.locked():
             raise ToolError("already on a call")
         async with self._call_lock:
-            built = await build_agent(key, instructions=instructions, agents=agents)
+            try:
+                built = (configured_home_assistant_agent() if backend == "homeassistant"
+                         else await build_agent(key, instructions=instructions, agents=agents))
+            except (OSError, ValueError):
+                raise ToolError("Cannot load the configured voice backend") from None
             try:
                 created = await asyncio.to_thread(self.client.create_call, reason,
                                                   priority="urgent" if urgent else "normal",

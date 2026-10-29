@@ -174,3 +174,48 @@ def test_wyoming_bounds_and_url_validation():
     for url in ('http://user:password@localhost', 'http://localhost/?token=secret', 'file:///tmp/ha'):
         with pytest.raises(ValueError):
             HomeAssistantVoice(url, 'token', 'p1', tts_host='localhost')
+
+
+def test_cli_homeassistant_selection_needs_no_gemini(monkeypatch, tmp_path):
+    from agentring.cli import _build_ai
+    from agentring.voice.quick import configured_home_assistant_agent
+    monkeypatch.setenv('AGENTRING_HOME', str(tmp_path))
+    monkeypatch.setenv('AGENTRING_VOICE_BACKEND', 'homeassistant')
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    token = tmp_path / 'ha-token'; token.write_text('test-secret')
+    for k, value in {'HA_URL': 'http://127.0.0.1:8123', 'HA_TOKEN_FILE': str(token),
+                     'HA_PIPELINE_ID': 'p1', 'WYOMING_TTS_HOST': 'localhost'}.items():
+        monkeypatch.setenv(k, value)
+    async def run():
+        built = await _build_ai(None, None, None, None, None, 'none')
+        assert isinstance(built.agent.backend(), HomeAssistantVoice)
+        assert not built.agent.tools
+        await built.aclose()
+    asyncio.run(run())
+    assert isinstance(configured_home_assistant_agent().agent.backend(), HomeAssistantVoice)
+
+
+def test_mcp_outgoing_selects_existing_ha_backend(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from agentring.mcp_server import AgentringTools, ToolError
+    from agentring.voice import quick
+    from agentring.voice.session import CallResult
+    monkeypatch.setenv('AGENTRING_HOME', str(tmp_path))
+    monkeypatch.setenv('AGENTRING_VOICE_BACKEND', 'homeassistant')
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    seen = []
+    async def call(info, join, **kwargs):
+        seen.append(info.reason)
+        return CallResult(info.call_id, True, 1, 'hung_up', [('user', 'Sí')])
+    async def close():
+        pass
+    monkeypatch.setattr(quick, 'configured_home_assistant_agent', lambda: SimpleNamespace(agent=SimpleNamespace(run=call), aclose=close))
+    async def run():
+        tool = object.__new__(AgentringTools)
+        tool._call_lock = asyncio.Lock(); tool.agent_name = tool.device_ids = None
+        tool.client = SimpleNamespace(create_call=lambda *a, **kw: {'call': {'call_id': 'c1'}, 'join': {}})
+        result = await tool.call('¿Seguimos?')
+        assert seen == ['¿Seguimos?'] and result['transcript'] == [{'who': 'user', 'text': 'Sí'}]
+        with pytest.raises(ToolError, match='manages its own context'):
+            await tool.call('Reason', context='Do not silently discard this')
+    asyncio.run(run())

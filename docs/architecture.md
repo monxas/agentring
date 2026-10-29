@@ -214,3 +214,12 @@ existing jose dependency. Apple credentials stay on the relay. SQLite stores
 separate APNs alert/VoIP tokens and environment for each device. The iOS transport
 is additive: existing Android devices and the daemon require no changes.
 See [ios.md](ios.md) for setup, security properties and hardware validation status.
+
+## Home Assistant voice adapter (2026-10-30)
+
+The user selected reuse of the existing Assist STT/conversation pipeline and Wyoming
+Leina voice instead of adding Gemini Live credentials. `HomeAssistantVoice` implements
+the existing realtime backend interface using bounded speech turns, one HA conversation
+per call, and direct Wyoming PCM synthesis. This is a daemon-only extension: no relay
+or mobile wire-protocol change. HA controls its own prompt/tool permissions; this
+backend does not import agentring MCP or command-agent tools. See `docs/voice.md`.

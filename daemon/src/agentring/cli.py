@@ -10,6 +10,7 @@ import signal
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated, Any, Optional
 
 import segno
@@ -33,7 +34,7 @@ agents_app = typer.Typer(help="Your agents the voice AI can consult (agents.yaml
 app.add_typer(agents_app, name="agents")
 
 JsonOpt = Annotated[bool, typer.Option("--json", help="Machine-readable JSON output.")]
-AiOpt = Annotated[bool, typer.Option("--ai", help="A voice AI (Gemini Live, needs GEMINI_API_KEY) talks on the call.")]
+AiOpt = Annotated[bool, typer.Option("--ai", help="The configured voice backend talks on the call (Gemini or Home Assistant).")]
 InstructionsOpt = Annotated[
     Optional[str], typer.Option("--instructions", help="--ai: system prompt, or @file to read it from a file.")
 ]
@@ -69,6 +70,25 @@ async def _build_ai(instructions: str | None, mcp: list[str] | None, tools: str 
         from .voice.quick import build_agent
     except ImportError:
         raise _fail("voice support is not installed: install agentring with the [voice] extra") from None
+    backend = secret("AGENTRING_VOICE_BACKEND") or "gemini"
+    if backend == "homeassistant":
+        if (instructions or mcp or tools or model or voice or agents_file not in (None, "none")
+                or (agents_file is None and (home_dir() / "agents.yaml").exists())):
+            raise _fail("Home Assistant owns its prompt/model/tools/voice; omit these options and use --agents none")
+        from .voice.quick import build_home_assistant_agent
+
+        url, token_file, pipeline, tts_host = (secret(k) for k in
+            ("HA_URL", "HA_TOKEN_FILE", "HA_PIPELINE_ID", "WYOMING_TTS_HOST"))
+        if not all((url, token_file, pipeline, tts_host)):
+            raise _fail("Home Assistant needs HA_URL, HA_TOKEN_FILE, HA_PIPELINE_ID and WYOMING_TTS_HOST")
+        try:
+            return build_home_assistant_agent(url, Path(token_file).read_text().strip(), pipeline,
+                tts_host=tts_host, tts_port=int(secret("WYOMING_TTS_PORT") or "10205"),
+                tts_voice=secret("WYOMING_TTS_VOICE") or "")
+        except (OSError, ValueError):
+            raise _fail("Cannot load Home Assistant voice configuration") from None
+    if backend != "gemini":
+        raise _fail("AGENTRING_VOICE_BACKEND must be gemini or homeassistant")
     key = secret("GEMINI_API_KEY")
     if not key:
         raise _fail("--ai needs GEMINI_API_KEY (environment or ~/.agentring/.env)")
@@ -627,7 +647,7 @@ def _describe(event: dict[str, Any]) -> str | None:
 
 @app.command()
 def serve(
-    ai: Annotated[bool, typer.Option("--ai", help="Answer calls from the phone with a voice AI (needs GEMINI_API_KEY).")] = False,
+    ai: Annotated[bool, typer.Option("--ai", help="Answer calls with the configured voice backend.")] = False,
     instructions: InstructionsOpt = None,
     mcp: McpOpt = None,
     tools: ToolsOpt = None,

@@ -13,6 +13,50 @@ uv tool install './daemon[voice]'
 echo GEMINI_API_KEY=... >> ~/.agentring/.env
 ```
 
+## Existing Home Assistant pipeline and Wyoming voice
+
+Set `AGENTRING_VOICE_BACKEND=homeassistant` to reuse an existing Assist speech-to-text
+and conversation agent, with an existing Wyoming PCM text-to-speech server. This
+backend needs no Gemini key and adds no dependencies. The iPhone, relay, APNs and
+LiveKit transport are unchanged.
+
+Store these settings in the daemon's private `~/.agentring/.env` (container: `/config/.env`):
+
+```dotenv
+AGENTRING_VOICE_BACKEND=homeassistant
+HA_URL=http://homeassistant.local:8123
+HA_TOKEN_FILE=/voice-secrets/ha-token
+HA_PIPELINE_ID=YOUR_EXISTING_PIPELINE_ID
+WYOMING_TTS_HOST=your-wyoming-host
+WYOMING_TTS_PORT=10205
+WYOMING_TTS_VOICE=your-installed-voice
+```
+
+`HA_TOKEN_FILE` is a private, read-only file with an existing Home Assistant access
+token. Mount only that credential directory, never the whole HA configuration or
+secret store. The token must authorize Assist. Phone speech is handled by the
+selected HA conversation agent, with **that agent's existing permissions and tools**.
+No pipeline, satellites, speakers, HA model settings or exposed-entity lists are changed.
+
+Run `agentring serve --ai --agents none`, or `agentring call "Reason" --ai --agents none`.
+This backend owns its greeting, and HA owns the conversation prompt/model/tools:
+`--instructions`, `--mcp`, `--tools`, `--model`, `--voice` and agent consultation
+configuration are rejected rather than silently ignored. Gemini remains the default
+when `AGENTRING_VOICE_BACKEND` is absent or `gemini`.
+
+Audio uses PCM16 mono, 16kHz into Assist and 24kHz out to LiveKit. A local energy gate
+collects speech, waits 720ms of silence, and sends one bounded utterance (maximum30s)
+to Assist. Each call has its own conversation id. Recognition and response run in
+sequence; the Wyoming voice streams PCM chunks directly, avoiding MP3 encoding or
+additional decoders. New speech clears queued playback and supersedes unstarted
+utterances. An HA action already started is not undone by an interruption.
+
+The caller can hang up normally. Exact Spanish farewell commands such as `adiós`,
+`hasta luego`, `cuelga` and `termina la llamada` also end the call after the spoken
+response. Calls have a 29-minute bound. Silence does not continuously open cloud
+recognition sessions. Provider failures close the voice session with a sanitized
+error; audio is not written to disk.
+
 ## Without code
 
 ```bash

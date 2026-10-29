@@ -16,6 +16,7 @@ _WHERE = {
     "load_agents": "agents",
     "RealtimeBackend": "backend", "ToolResult": "backend",
     "GeminiLive": "gemini",
+    "HomeAssistantVoice": "homeassistant",
     "accept_incoming": "inbound", "is_incoming_call": "inbound",
     "CallInfo": "session", "CallResult": "session", "CallSession": "session", "Prompts": "session",
     "VoiceAgent": "session",

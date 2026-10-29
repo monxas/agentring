@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .agents import AgentsConfig, Consultations
 from .gemini import DEFAULT_MODEL, DEFAULT_VOICE, GeminiLive
-from .session import VoiceAgent
+from .session import Prompts, VoiceAgent
 from .tools import McpClient, Tool, mcp_tools
 
 DEFAULT_INSTRUCTIONS = (
@@ -51,6 +51,19 @@ class BuiltAgent:
             await self.consultations.aclose()
         for c in self.mcp_clients:
             await c.aclose()
+
+
+def build_home_assistant_agent(url: str, token: str, pipeline: str, *, tts_host: str,
+                               tts_port: int = 10205, tts_voice: str = "") -> BuiltAgent:
+    """Reuse the configured Assist agent and a Wyoming voice; no external agentring tools."""
+    from .homeassistant import HomeAssistantVoice
+
+    prompts = Prompts(incoming="Hola, soy Leina. ¿En qué te ayudo?",
+                      answered="Hola, soy Leina. Te llamo por esto: {reason}",
+                      joined="Se ha unido otra persona a la llamada.",
+                      left="Una persona ha salido de la llamada.")
+    return BuiltAgent(VoiceAgent(lambda: HomeAssistantVoice(url, token, pipeline, tts_host=tts_host,
+                          tts_port=tts_port, tts_voice=tts_voice), "", prompts=prompts), [])
 
 
 async def build_agent(

@@ -7,7 +7,7 @@ The daemon and agent integrations are unchanged. The relay supports Android and 
 at the same time; iOS-only installations do not need Firebase.
 
 This is a development preview: the relay and Swift protocol core have automated
-tests, but the complete app must still be built and verified on an actual iPhone.
+tests, and the complete app builds for arm64 iPhones in CI. End-to-end calling must still be verified on an actual iPhone.
 Do not treat locked-phone ringing or audio as hardware-validated yet.
 
 ## Apple setup
@@ -141,6 +141,53 @@ that release updates WebRTC to remove compromised eMudhra roots. See its
 - App Swift sources passed the compiler's syntax parsing; project and property
   lists passed `plutil -lint`. These checks do not replace compiling/linking the app.
 - Relay production dependency audit: zero reported vulnerabilities (`npm audit --omit=dev`).
-- Full simulator build could not run: Xcode exits 69 because its license has not
-  been accepted. No signing profile, Apple push credentials or iPhone was used.
+- Full arm64 iPhone build passed in [GitHub Actions](https://github.com/monxas/agentring/actions/runs/40964308597). The artifact is an unsigned device app (not a simulator build).
 - The iOS CI workflow builds an unsigned arm64 iPhone app. Hardware verification still requires local signing and installation.
+
+### Install a CI device build without rebuilding LiveKit locally
+
+The iOS workflow publishes `AgentRing-iPhone`, containing `AgentRing-iphone.zip`.
+After downloading and extracting it on a Mac with Xcode and a valid Apple
+Developer account, run:
+
+```bash
+python3 scripts/install-ios-device.py /path/to/AgentRing.app \
+  --device YOUR_IPHONE_UDID --team YOUR_TEAM_ID --bundle-id your.registered.bundle.identifier
+```
+
+The helper builds a tiny local signing target with matching capabilities so Xcode
+can provision the selected physical iPhone. It copies that development profile and
+entitlements into the CI app, signs the app and its embedded frameworks, verifies
+the signature, and installs and launches it with `devicectl`. The helper is never
+installed. Apple signing keys stay in the local Keychain. Generated files live in
+`.build/ios-device-signing`; no simulator is used.
+
+### Physical-device validation (2026-10-29)
+
+The CI-built arm64 app was signed locally with a development profile, installed
+and launched on an iPhone 16 Pro running iOS 27.2. Its process remained alive
+under `devicectl --console` after startup. The installer signs embedded `.dylib`
+files as well as frameworks; unsigned debug dylibs otherwise cause an immediate
+dyld exit even when installation itself succeeds. The signed app passes
+`codesign --verify --deep --strict`.
+
+Pairing with a real relay, background APNs/PushKit delivery and two-way call audio
+still require end-to-end verification. No relay or APNs provider key has been
+configured on behalf of this installation.
+
+If Xcode's account session cannot provision automatically, use a development
+profile downloaded manually from your Apple Developer account. The profile must
+match your team, exact bundle identifier and physical iPhone, and enable Push
+Notifications:
+
+```bash
+python3 scripts/install-ios-device.py /path/to/AgentRing.app \
+  --device YOUR_IPHONE_UDID --team YOUR_TEAM_ID --bundle-id your.bundle.identifier \
+  --profile /path/to/Development.mobileprovision
+```
+
+The profile embeds its public development certificate. When needed, `--key`
+imports the corresponding locally generated private key and that certificate
+into the login Keychain. It does not upload the private key. The temporary PKCS#12
+file is encrypted with a random password and deleted after import. On macOS the
+helper uses the system OpenSSL implementation for Keychain-compatible PKCS#12.

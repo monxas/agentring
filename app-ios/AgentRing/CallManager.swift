@@ -11,6 +11,8 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
     var isBusy: Bool { uuid != nil }
     @Published private(set) var label = ""
     @Published private(set) var muted = false
+    @Published private(set) var speakerEnabled = false
+    @Published private(set) var connectedAt: Date?
     private let provider: CXProvider
     private let controller = CXCallController()
     private unowned let state: AppState
@@ -88,14 +90,14 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
         if event.type == "call.end" || event.type == "call.missed" { finish(reason: event.type == "call.missed" ? .unanswered : .remoteEnded) }
         if event.type == "call.decline", event.by == "agent" { finish(reason: .remoteEnded) }
         if event.type == "call.accept", event.by == "agent", let uuid {
-            provider.reportOutgoingCall(with: uuid, connectedAt: Date()); label = "Connected"
+            provider.reportOutgoingCall(with: uuid, connectedAt: Date()); label = "Connected"; if connectedAt == nil { connectedAt = Date() }
         }
     }
     func reconcile(_ call: RelayCall) {
         guard call.call_id == callID else { return }
         if !["ringing", "active"].contains(call.state) { finish(reason: .remoteEnded) }
         else if !incoming, call.state == "active", let uuid {
-            provider.reportOutgoingCall(with: uuid, connectedAt: Date()); label = "Connected"
+            provider.reportOutgoingCall(with: uuid, connectedAt: Date()); label = "Connected"; if connectedAt == nil { connectedAt = Date() }
         }
     }
     func startOutgoing() async throws {
@@ -116,7 +118,10 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
         guard let uuid else { return }
         try await controller.request(CXTransaction(action: CXSetMutedCallAction(call: uuid, muted: !muted)))
     }
-    func speaker(_ enabled: Bool) throws { try AVAudioSession.sharedInstance().overrideOutputAudioPort(enabled ? .speaker : .none) }
+    func speaker(_ enabled: Bool) throws {
+        try AVAudioSession.sharedInstance().overrideOutputAudioPort(enabled ? .speaker : .none)
+        speakerEnabled = enabled
+    }
     private func configureAudio() throws {
         try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth])
     }
@@ -128,6 +133,8 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
         try await room.connect(url: join.livekit_url, token: join.livekit_token)
         guard self.uuid == uuid, !Task.isCancelled else { await room.disconnect(); throw CancellationError() }
         try await room.localParticipant.setMicrophone(enabled: true)
+        if connectedAt == nil { connectedAt = Date() }
+        label = "Connected"
     }
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
         guard let id = callID, action.callUUID == uuid else { action.fail(); return }
@@ -137,7 +144,7 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
                 let result: CallWithJoin = try await state.api().get("/v1/calls/\(id)/accept", method: "POST")
                 accepted = true
                 try await connect(result.join, uuid: action.callUUID)
-                label = "Connected"; action.fulfill()
+                label = "Connected"; if connectedAt == nil { connectedAt = Date() }; action.fulfill()
             } catch { action.fail(); state.error = error.localizedDescription; await cleanupRemote(id); finish(reason: .failed) }
         }
     }
@@ -195,7 +202,7 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
     func reset() {
         connectionTask?.cancel(); connectionTask = nil; timer?.invalidate(); timer = nil
         if let room { Task { await room.disconnect() } }; room = nil
-        callID = nil; uuid = nil; muted = false; accepted = false; label = ""
+        callID = nil; uuid = nil; muted = false; speakerEnabled = false; connectedAt = nil; accepted = false; label = ""
         try? AudioManager.shared.setEngineAvailability(.none)
         state.callFinished()
     }

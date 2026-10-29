@@ -8,6 +8,7 @@ final class AppState: ObservableObject {
     static let shared = AppState()
     @Published var credentials = CredentialStore.load()
     @Published var messages: [Message] = []
+    @Published var callHistory: [RelayCall] = []
     @Published var connected = false
     @Published var agentOnline = false
     @Published var error: String?
@@ -105,7 +106,7 @@ final class AppState: ObservableObject {
         loop?.cancel(); loop = nil; socket?.cancel(with: .goingAway, reason: nil); socket = nil; connected = false
     }
     func forget() {
-        stop(); tokenUpdate?.cancel(); calls.reset(); CredentialStore.clear(); credentials = nil; messages = []; lastSeq = 0
+        stop(); tokenUpdate?.cancel(); calls.reset(); CredentialStore.clear(); credentials = nil; messages = []; callHistory = []; lastSeq = 0
     }
     func unpair() async throws {
         _ = try await api().data("/v1/device/apns", method: "POST", body: [
@@ -130,6 +131,8 @@ final class AppState: ObservableObject {
             after = last.msg_id
         } while !Task.isCancelled
         messages = collected
+        let history: CallPage = try await api.get("/v1/calls?limit=100")
+        callHistory = history.calls
     }
     func send(_ text: String, replyTo: String? = nil) async throws {
         var body: [String: Any] = ["text": text, "client_msg_id": UUID().uuidString]
@@ -144,7 +147,12 @@ final class AppState: ObservableObject {
     }
     func handle(_ event: RelayEvent) async {
         if event.type == "agent.presence" { agentOnline = event.online ?? false }
-        if event.type.hasPrefix("call.") { calls.event(event) }
+        if event.type.hasPrefix("call.") {
+            calls.event(event)
+            if event.type == "call.end" || event.type == "call.missed" {
+                do { try await refresh() } catch { self.error = error.localizedDescription }
+            }
+        }
         if event.type.hasPrefix("msg.") {
             do { try await refresh() } catch { self.error = error.localizedDescription }
         }

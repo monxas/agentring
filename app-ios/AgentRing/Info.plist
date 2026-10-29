@@ -5,7 +5,7 @@
 	<key>APNSEnvironment</key>
 	<string>$(APNS_ENVIRONMENT)</string>
 	<key>CFBundleDisplayName</key>
-	<string>agentring</string>
+	<string>AgentRing</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>

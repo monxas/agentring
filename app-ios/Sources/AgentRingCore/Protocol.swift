@@ -65,7 +65,15 @@ public struct MessagePage: Decodable {
     public let messages: [Message]
     public let has_more: Bool
 }
-public struct RelayCall: Decodable {
+public struct CallPage: Decodable {
+    public let calls: [RelayCall]
+}
+public struct RelayCall: Decodable, Identifiable {
+    public var id: String { call_id }
+    public let created_at: Double?
+    public let answered_at: Double?
+    public let ended_at: Double?
+    public let end_reason: String?
     public let call_id: String
     public let direction: String
     public let state: String

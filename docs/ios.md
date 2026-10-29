@@ -120,13 +120,12 @@ References: [Apple PushKit/CallKit requirements](https://developer.apple.com/doc
 cd relay && npm ci && npm run typecheck && npm test && npm run build
 cd app-ios && swift test
 xcodebuild -project AgentRing.xcodeproj -scheme AgentRing \
-  -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+  -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
 ```
 
 The core Swift package tests use the shared protocol event fixtures and HMAC
 signature vector. Relay tests cover APNs HTTP/2 headers and provider JWTs, token
-rotation/revocation, platform validation and targeted calls. Simulator builds do
-not validate background VoIP delivery, CallKit timing or microphone routing.
+rotation/revocation, platform validation and targeted calls. Unsigned device builds do not validate background VoIP delivery, CallKit timing or microphone routing.
 
 LiveKit Swift is pinned to 2.19.0 despite being less than two weeks old because
 that release updates WebRTC to remove compromised eMudhra roots. See its
@@ -144,4 +143,4 @@ that release updates WebRTC to remove compromised eMudhra roots. See its
 - Relay production dependency audit: zero reported vulnerabilities (`npm audit --omit=dev`).
 - Full simulator build could not run: Xcode exits 69 because its license has not
   been accepted. No signing profile, Apple push credentials or iPhone was used.
-- The iOS CI workflow is included but has not been run remotely.
+- The iOS CI workflow builds an unsigned arm64 iPhone app. Hardware verification still requires local signing and installation.

@@ -43,7 +43,7 @@ cd app-android && ./gradlew -PcoreOnly :core:test   # when Google's Maven is unr
 
 iOS: `cd app-ios && swift test`; build `AgentRing.xcodeproj` with Xcode 16.3+.
 See [docs/ios.md](docs/ios.md) for signing, Apple push setup and hardware checks.
-The iOS workflow builds an unsigned simulator app and tests the protocol core.
+The iOS workflow builds an unsigned iPhone app and tests the protocol core.
 
 ## Protocol first
 

@@ -95,7 +95,8 @@ final class AppState: ObservableObject {
                         self.error = "This device was revoked. Pair again."
                         forget(); return
                     }
-                    if !Task.isCancelled { self.error = error.localizedDescription }
+                    // Connection loss is represented inline; avoid repeated modal alerts
+                    // while the phone changes networks or the server is unavailable.
                 }
                 do { try await Task.sleep(nanoseconds: delay * 1_000_000_000) } catch { break }
                 delay = min(delay * 2, 30)

@@ -90,14 +90,14 @@ final class CallManager: NSObject, ObservableObject, CXProviderDelegate {
         if event.type == "call.end" || event.type == "call.missed" { finish(reason: event.type == "call.missed" ? .unanswered : .remoteEnded) }
         if event.type == "call.decline", event.by == "agent" { finish(reason: .remoteEnded) }
         if event.type == "call.accept", event.by == "agent", let uuid {
-            provider.reportOutgoingCall(with: uuid, connectedAt: Date()); label = "Connected"; if connectedAt == nil { connectedAt = Date() }
+            provider.reportOutgoingCall(with: uuid, connectedAt: Date()); label = "Connected"
         }
     }
     func reconcile(_ call: RelayCall) {
         guard call.call_id == callID else { return }
         if !["ringing", "active"].contains(call.state) { finish(reason: .remoteEnded) }
         else if !incoming, call.state == "active", let uuid {
-            provider.reportOutgoingCall(with: uuid, connectedAt: Date()); label = "Connected"; if connectedAt == nil { connectedAt = Date() }
+            provider.reportOutgoingCall(with: uuid, connectedAt: Date()); label = "Connected"
         }
     }
     func startOutgoing() async throws {

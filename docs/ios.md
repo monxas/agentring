@@ -191,3 +191,18 @@ imports the corresponding locally generated private key and that certificate
 into the login Keychain. It does not upload the private key. The temporary PKCS#12
 file is encrypted with a random password and deleted after import. On macOS the
 helper uses the system OpenSSL implementation for Keychain-compatible PKCS#12.
+
+### Native interface refresh (2026-10-30)
+
+The companion now has native conversation, recent-call and settings tabs, with
+adaptive system surfaces, dark mode, Dynamic Type, semantic accessibility labels,
+a dedicated call sheet and a persistent active-call banner. Conversation messages
+use separate bubbles, date separators, read states, reply/copy menus and a keyboard
+composer. Recent calls come from the existing authenticated `/v1/calls` endpoint;
+no protocol or relay migration is needed. Reconnection stays inline rather than
+repeatedly opening alerts. The native icon is an original waveform/ring asset.
+
+Device build2 passed the complete iPhone CI build and was signed/installed over
+the existing `com.monxas.agentring` app with the same team and Keychain access.
+Launch/visual validation is pending an unlocked physical phone. No simulator was
+used. CI: https://github.com/monxas/agentring/actions/runs/40976692212 .

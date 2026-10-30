@@ -50,10 +50,13 @@ def main():
             obj["packageProductDependencies"] = []
         elif obj["isa"] == "PBXFrameworksBuildPhase":
             obj["files"] = []
+        elif obj["isa"] == "PBXResourcesBuildPhase":
+            obj["files"] = []
         elif obj["isa"] == "PBXSourcesBuildPhase":
             obj["files"] = ["F00000000000000000000002"]
         elif obj["isa"] == "XCBuildConfiguration":
             settings = obj["buildSettings"]
+            settings.pop("ASSETCATALOG_COMPILER_APPICON_NAME", None)
             settings["PRODUCT_BUNDLE_IDENTIFIER"] = args.bundle_id
             settings["DEVELOPMENT_TEAM"] = args.team
     objects["F00000000000000000000001"] = {"isa": "PBXFileReference", "lastKnownFileType": "sourcecode.swift", "path": "SigningProbe.swift", "sourceTree": "SOURCE_ROOT"}
@@ -149,7 +152,24 @@ def main():
     run("codesign", "--force", "--sign", identity, "--entitlements", entitlement_path, "--timestamp=none", destination)
     run("codesign", "--verify", "--deep", "--strict", destination)
     run("xcrun", "devicectl", "device", "install", "app", "--device", args.device, destination)
-    run("xcrun", "devicectl", "device", "process", "launch", "--device", args.device, args.bundle_id)
+    installed = {
+        "bundle_id": args.bundle_id, "device": args.device,
+        "build": info.get("CFBundleVersion"), "version": info.get("CFBundleShortVersionString"),
+        "installed_at": datetime.now(timezone.utc).isoformat(), "signature_verified": True,
+        "source_executable_sha256": hashlib.sha256((source / info["CFBundleExecutable"]).read_bytes()).hexdigest(),
+        "launched": False,
+    }
+    evidence = work / "Installation.json"
+    evidence.write_text(json.dumps(installed, indent=2) + "\n")
+    launch = subprocess.run(["xcrun", "devicectl", "device", "process", "launch", "--device", args.device,
+                             args.bundle_id], capture_output=True, text=True)
+    if launch.returncode:
+        if "Locked" in launch.stderr or "could not be, unlocked" in launch.stderr:
+            print("Installed and signature verified. Unlock the physical iPhone, then launch the app to finish validation.")
+            raise SystemExit(2)
+        raise RuntimeError("App installed, but launch failed: " + launch.stderr.strip())
+    installed["launched"] = True
+    evidence.write_text(json.dumps(installed, indent=2) + "\n")
     time.sleep(3)
     processes_path = work / "RunningProcesses.json"
     run("xcrun", "devicectl", "device", "info", "processes", "--device", args.device,

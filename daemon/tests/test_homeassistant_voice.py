@@ -17,7 +17,7 @@ def packet(kind, data=None, payload=b''):
     return json.dumps({'type': kind, 'data_length': len(data_bytes), 'payload_length': len(payload)}).encode() + b'\n' + data_bytes + payload
 
 
-async def fixtures(reject_auth=False, fail_pipeline=False):
+async def fixtures(reject_auth=False, fail_pipeline=False, stream=None):
     calls = []
     audio = []
     spoken = []
@@ -48,11 +48,17 @@ async def fixtures(reject_auth=False, fail_pipeline=False):
                 break
             raw_audio.extend(chunk[1:])
         audio.append(bytes(raw_audio))
+        if stream is not None:
+            stream['uploaded'].set()
         if fail_pipeline:
             await event('error', {'code': 'cloud-auth-failed', 'message': 'private provider detail'})
         else:
             await event('stt-end', {'stt_output': {'text': 'dos más dos'}})
-            await event('intent-end', {'intent_output': {'conversation_id': 'conversation-1', 'response': {'speech': {'plain': {'speech': 'Cuatro.'}}}}})
+            if stream is not None:
+                await event('intent-progress', {'chat_log_delta': {'role': 'assistant', 'content': 'La primera frase. '}})
+                await stream['release'].wait()
+                await event('intent-progress', {'chat_log_delta': {'content': 'La segunda frase.'}})
+            await event('intent-end', {'intent_output': {'conversation_id': 'conversation-1', 'response': {'speech': {'plain': {'speech': 'Cuatro.' if stream is None else 'La primera frase. La segunda frase.'}}}}})
         await event('run-end', None)
 
     async def tts(reader, writer):
@@ -218,4 +224,76 @@ def test_mcp_outgoing_selects_existing_ha_backend(monkeypatch, tmp_path):
         assert seen == ['¿Seguimos?'] and result['transcript'] == [{'who': 'user', 'text': 'Sí'}]
         with pytest.raises(ToolError, match='manages its own context'):
             await tool.call('Reason', context='Do not silently discard this')
+    asyncio.run(run())
+
+
+def test_first_audio_precedes_final_model_response_and_has_no_duplicate_speech():
+    async def run():
+        stream = {'release': asyncio.Event(), 'uploaded': asyncio.Event()}
+        b, ha, tts, _, _, spoken = await fixtures(stream=stream)
+        try:
+            await b.connect('', [])
+            b._submit('audio', b'\0' * 3200)
+            events = []
+            async with asyncio.timeout(5):
+                async for event in b.events():
+                    events.append(event)
+                    if isinstance(event, AudioOut):
+                        break
+            assert not stream['release'].is_set()
+            assert spoken == ['La primera frase. ']
+            assert 'intent_ms' not in b.last_timing
+            stream['release'].set()
+            events += await turn(b)
+            assert spoken == ['La primera frase. ', 'La segunda frase.']
+            assert [e.role for e in events if isinstance(e, Transcript)] == ['user', 'agent', 'agent']
+            assert b.last_timing['first_audio_ms'] <= b.last_timing['intent_ms']
+        finally:
+            stream['release'].set()
+            await cleanup(b, ha, tts)
+    asyncio.run(run())
+
+
+def test_recognition_upload_starts_while_caller_is_still_speaking():
+    from agentring.voice.homeassistant import AudioInput
+    async def run():
+        b, ha, tts, calls, audio, _ = await fixtures()
+        try:
+            await b.connect('', [])
+            await b.send_audio(struct.pack('<h', 2000) * (640 * 8))
+            async with asyncio.timeout(5):
+                while not calls:
+                    await asyncio.sleep(.005)
+            assert b._capture is not None and not b._capture.ended_at
+            assert not audio  # EOF has not been sent; recognition is already connected.
+            await b.send_audio(b'\0' * (1280 * 14))
+            await turn(b)
+            assert len(audio) == 1 and b._capture is None
+            assert 'after_speech_ms' in b.last_timing
+        finally:
+            await cleanup(b, ha, tts)
+    asyncio.run(run())
+
+
+def test_new_speech_cancels_stalled_model_instead_of_waiting_for_timeout():
+    async def run():
+        stream = {'release': asyncio.Event(), 'uploaded': asyncio.Event()}
+        b, ha, tts, calls, _, _ = await fixtures(stream=stream)
+        try:
+            await b.connect('', [])
+            b._submit('audio', b'\0' * 3200)
+            async with asyncio.timeout(5):
+                while b._active is None or not stream['uploaded'].is_set():
+                    await asyncio.sleep(.005)
+            old = b._active
+            await b.send_audio(struct.pack('<h', 2000) * (640 * 8))
+            async with asyncio.timeout(5):
+                while not old.done() or len(calls) < 2:
+                    await asyncio.sleep(.005)
+            assert old.cancelled()
+            assert b._capture is not None
+            # The second recognition session opened despite the first model being gated.
+        finally:
+            stream['release'].set()
+            await cleanup(b, ha, tts)
     asyncio.run(run())

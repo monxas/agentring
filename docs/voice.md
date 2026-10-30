@@ -146,3 +146,30 @@ docker run -d --name lk -p 7880:7880 -p 7881:7881 -p 50000-50100:50000-50100/udp
 AGENTRING_TEST_LIVEKIT_URL=ws://127.0.0.1:7880 AGENTRING_TEST_LIVEKIT_SECRET=$(cat /tmp/lk) \
 GEMINI_API_KEY=... uv run --extra voice pytest tests/test_voice_live.py -s
 ```
+
+### Streaming Home Assistant bridge
+
+The bridge now opens recognition after120ms of confirmed speech and uploads PCM
+while the caller speaks. Silence never opens recognition. A480ms end-of-speech
+window replaces720ms; `AGENTRING_SILENCE_MS` accepts240–1500ms for slower speakers.
+Assist text deltas are split at phrase boundaries and synthesized concurrently,
+so the first phrase can play before the complete LLM response. Non-streaming
+agents fall back to their final response without duplicate speech. New confirmed
+speech cancels the previous recognition/model/synthesis task and clears playback.
+
+`voice timing` logs contain only phase timings and a streaming flag, never text,
+audio, tokens or credentials. `after_speech_ms` estimates the interval from the
+last voiced frame to first backend PCM; it excludes LiveKit/iPhone playback.
+
+For a bounded A/B measurement, use a harmless fixed spoken question (no home
+commands), encoded as PCM16 mono16kHz, inside the configured daemon environment:
+
+```bash
+python scripts/measure-ha-voice.py --pcm /private/question.pcm --repetitions 3
+```
+
+The buffered baseline reproduces the previous720ms window, upload after speech,
+final-response wait and whole-text synthesis. Streaming feeds the same audio at
+real-time speed. Only timings and byte counts are printed; there is no phone
+call or household playback. These measurements do not prove audible latency on
+a physical iPhone. Keep synthetic input private and remove it after measurement.

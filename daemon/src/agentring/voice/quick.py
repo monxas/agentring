@@ -54,7 +54,7 @@ class BuiltAgent:
 
 
 def build_home_assistant_agent(url: str, token: str, pipeline: str, *, tts_host: str,
-                               tts_port: int = 10205, tts_voice: str = "") -> BuiltAgent:
+                               tts_port: int = 10205, tts_voice: str = "", silence_ms: int = 480) -> BuiltAgent:
     """Reuse the configured Assist agent and a Wyoming voice; no external agentring tools."""
     from .homeassistant import HomeAssistantVoice
 
@@ -63,7 +63,7 @@ def build_home_assistant_agent(url: str, token: str, pipeline: str, *, tts_host:
                       joined="Se ha unido otra persona a la llamada.",
                       left="Una persona ha salido de la llamada.")
     return BuiltAgent(VoiceAgent(lambda: HomeAssistantVoice(url, token, pipeline, tts_host=tts_host,
-                          tts_port=tts_port, tts_voice=tts_voice), "", prompts=prompts), [])
+                          tts_port=tts_port, tts_voice=tts_voice, silence_ms=silence_ms), "", prompts=prompts), [])
 
 
 def configured_home_assistant_agent() -> BuiltAgent:
@@ -76,7 +76,8 @@ def configured_home_assistant_agent() -> BuiltAgent:
         raise ValueError("Home Assistant needs HA_URL, HA_TOKEN_FILE, HA_PIPELINE_ID and WYOMING_TTS_HOST")
     return build_home_assistant_agent(url, Path(token_file).read_text().strip(), pipeline,
         tts_host=tts_host, tts_port=int(secret("WYOMING_TTS_PORT") or "10205"),
-        tts_voice=secret("WYOMING_TTS_VOICE") or "")
+        tts_voice=secret("WYOMING_TTS_VOICE") or "",
+        silence_ms=int(secret("AGENTRING_SILENCE_MS") or "480"))
 
 
 async def build_agent(

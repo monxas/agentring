@@ -39,7 +39,7 @@ async def fixtures(reject_auth=False, fail_pipeline=False, stream=None):
         await ws.send(json.dumps({'id': 1, 'type': 'result', 'success': True}))
         async def event(kind, data):
             await ws.send(json.dumps({'id': 1, 'type': 'event', 'event': {'type': kind, 'data': data}}))
-        await event('run-start', {'runner_data': {'stt_binary_handler_id': 7}})
+        await event('run-start', {'conversation_id': 'conversation-1', 'runner_data': {'stt_binary_handler_id': 7}})
         raw_audio = bytearray()
         while True:
             chunk = await ws.recv()
@@ -291,6 +291,7 @@ def test_new_speech_cancels_stalled_model_instead_of_waiting_for_timeout():
                 while not old.done() or len(calls) < 2:
                     await asyncio.sleep(.005)
             assert old.cancelled()
+            assert calls[1]['conversation_id'] == 'conversation-1'
             assert b._capture is not None
             # The second recognition session opened despite the first model being gated.
         finally:

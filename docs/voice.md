@@ -156,6 +156,8 @@ Assist text deltas are split at phrase boundaries and synthesized concurrently,
 so the first phrase can play before the complete LLM response. Non-streaming
 agents fall back to their final response without duplicate speech. New confirmed
 speech cancels the previous recognition/model/synthesis task and clears playback.
+The conversation ID is retained from run-start, so interrupting the first response
+does not start a disconnected conversation on the next turn.
 
 `voice timing` logs contain only phase timings and a streaming flag, never text,
 audio, tokens or credentials. `after_speech_ms` estimates the interval from the

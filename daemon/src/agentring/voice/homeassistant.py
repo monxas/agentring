@@ -201,6 +201,10 @@ class HomeAssistantVoice:
                             continue
                         event = r.get("event") or {}; data = event.get("data") or {}; kind = event.get("type")
                         if kind == "run-start":
+                            # Keep context even if the caller interrupts before intent-end.
+                            conversation = data.get("conversation_id")
+                            if isinstance(conversation, str) and conversation:
+                                self.conversation_id = conversation
                             handler = (data.get("runner_data") or {}).get("stt_binary_handler_id")
                             if type(handler) is not int or not 0 <= handler <= 255:
                                 raise ValueError("Home Assistant returned an invalid audio handler")

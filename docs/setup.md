@@ -114,9 +114,13 @@ the daemon on the VPS instead, next to the relay, see the `daemon` profile at th
 
 ## 4. The app
 
-1. On the phone, download `agentring.apk` from the
+1. On the phone, install agentring from
+   [Google Play](https://play.google.com/store/apps/details?id=dev.agentring.app). This is the
+   recommended way: Play keeps the app up to date, and the same app works with your own relay
+   (you pair it with your relay's QR code below). If you'd rather not use Play, download `agentring.apk` from the
    [latest release](https://github.com/mutonby/agentring/releases) and install it (Android
-   asks you to allow installs from your browser once).
+   asks you to allow installs from your browser once). The two are signed with different
+   keys, so to switch from one to the other, uninstall the app first.
 2. Open it and tap **Get started**. It asks, one by one, for notifications, the microphone,
    full-screen calls on the lock screen and unrestricted battery use: allow them all.
 3. On your computer, run `agentring pair`. Scan the QR code it shows with the app, or copy
@@ -132,7 +136,7 @@ agentring msg "hello"                 # the phone gets a notification; reply fro
 agentring replies                     # your reply
 
 agentring call "test"                 # rings; answer and you hear a greeting, then your own voice echoed
-echo GEMINI_API_KEY=... >> ~/.agentring/.env   # free key: https://aistudio.google.com/apikey
+echo GEMINI_API_KEY=... >> ~/.agentring/.env   # free key: https://aistudio.google.com/apikey (or another provider: voice.md)
 agentring call "The backup failed" --ai        # a voice AI tells you why it's calling and talks with you
 ```
 
@@ -161,7 +165,7 @@ other harnesses, and how to let the voice AI ask your agents for help during a c
 | Messages arrive only with the app open | `agentring status` says `NO push token`: put the Firebase files in `deploy/secrets/`, uncomment the `FCM_` lines, restart, and pair again. |
 | The phone doesn't ring when locked | Firebase (above), then the battery settings for your phone: [troubleshooting-oem.md](troubleshooting-oem.md). |
 | The call connects but there is no sound | Call audio needs UDP 50000–50100 and TCP 7881 open to the phone. On a VPS, set `LIVEKIT_NODE_IP` to its public IPv4. |
-| `agentring call --ai` says it needs a key | `GEMINI_API_KEY` in `~/.agentring/.env`. |
+| `agentring call --ai` says it needs a key | The provider's key in `~/.agentring/.env`: `GEMINI_API_KEY` by default, or `OPENAI_API_KEY` / `XAI_API_KEY` / `PHONIC_API_KEY` ([voice.md](voice.md#providers)). |
 
 ### Running the relay without Docker (development)
 
@@ -171,7 +175,12 @@ AGENTRING_INSECURE_DEV=1 AGENTRING_PUBLIC_URL=http://192.168.1.20:8080 npm start
 ```
 
 This covers messages only. Calls also need a LiveKit server (`LIVEKIT_URL`,
-`LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`); option B sets that up for you.
+`LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`) running with `room.auto_create: false`;
+option B sets that up for you.
+
+The relay reads the client address from `X-Forwarded-For`, trusting one reverse proxy.
+Set `AGENTRING_TRUSTED_PROXIES` to the number of proxies in front of it, or `0` if
+clients reach it directly.
 
 ## Behind an existing reverse proxy (with calls)
 

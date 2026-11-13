@@ -179,18 +179,26 @@ class CallManager(private val context: Context) : TelecomBridge.Listener {
                 if (call?.isJoinable == true) offerJoin(call) else CallNotifications.showMissed(context, info)
             }
         }
-        telecomActive = Graph.settings.useTelecom && telecom.addIncoming(info.agentName, info.callId, this)
+        val onCall = { _state.value.let { it != null && it !is CallUi.Ended && it.info.callId == info.callId } }
+        telecomActive = Graph.settings.useTelecom && telecom.addIncoming(info.agentName, info.callId, this, onCall)
         Log.i(TAG, "telecom: $telecomActive")
-        if (!isCurrent(info.callId)) return
+        if (!onCall()) return
+        // Answered while Telecom was adding the call: `answer` couldn't tell it then.
+        if (telecomActive && _state.value !is CallUi.Incoming) telecom.answer()
         // Build the WebRTC stack and warm the connection while the user decides.
         val s = VoiceSession(context, scope, telecomRoutesAudio = telecomActive)
         session = s
         prefs.getString(KEY_LAST_LIVEKIT_URL, null)?.let { s.prepare(it) }
     }
 
-    fun answer() {
+    /** Answers [callId] if it is the call ringing now; a stale action for an earlier call does nothing. */
+    fun answer(callId: String) {
         val cur = _state.value as? CallUi.Incoming ?: return
         val info = cur.info
+        if (info.callId != callId) {
+            Log.w(TAG, "ignoring answer for $callId: ${info.callId} is ringing")
+            return
+        }
         ringer.stop()
         timeoutJob?.cancel()
         _state.value = CallUi.Connecting(info)
@@ -231,7 +239,7 @@ class CallManager(private val context: Context) : TelecomBridge.Listener {
     fun join(info: CallInfo) {
         val cur = _state.value
         if (cur != null && cur !is CallUi.Ended) {
-            if (cur is CallUi.Incoming && cur.info.callId == info.callId) answer()
+            if (cur is CallUi.Incoming) answer(info.callId)
             return
         }
         synchronized(seen) { seen.add(info.callId) } // a replayed invite must not ring now
@@ -322,6 +330,7 @@ class CallManager(private val context: Context) : TelecomBridge.Listener {
             return when (e.code) {
                 "agent_offline" -> R.string.call_agent_offline
                 "busy" -> R.string.call_agent_busy
+                "quota_exceeded" -> R.string.call_agent_quota
                 "calls_unavailable" -> R.string.call_agent_unavailable
                 else -> R.string.call_failed
             }
@@ -485,10 +494,16 @@ class CallManager(private val context: Context) : TelecomBridge.Listener {
             when (event) {
                 // Group calls: another phone answering or declining doesn't stop ours
                 // ringing; we can still join until the call stops ringing.
-                is Event.CallEnd -> if (event.callId == info.callId && cur !is CallUi.Ended) {
-                    val missed = cur is CallUi.Incoming
-                    finish(info, if (missed) R.string.call_missed else R.string.call_ended_by_agent,
-                        if (missed) DisconnectCause.CANCELED else DisconnectCause.REMOTE, notifyMissed = missed)
+                is Event.CallEnd -> if (event.callId == info.callId) {
+                    val quota = event.reason == "quota" // the relay cut the call: the month's minutes ran out
+                    if (cur is CallUi.Ended) {
+                        // The voice session may notice first ("ended by the agent"): say why instead.
+                        if (quota) _state.value = cur.copy(messageRes = R.string.call_ended_quota)
+                    } else {
+                        val missed = cur is CallUi.Incoming
+                        finish(info, if (missed) R.string.call_missed else if (quota) R.string.call_ended_quota else R.string.call_ended_by_agent,
+                            if (missed) DisconnectCause.CANCELED else DisconnectCause.REMOTE, notifyMissed = missed)
+                    }
                 }
                 is Event.CallMissed -> if (event.callId == info.callId && cur is CallUi.Incoming) {
                     finish(info, R.string.call_missed, DisconnectCause.MISSED, notifyMissed = true)
@@ -520,6 +535,16 @@ class CallManager(private val context: Context) : TelecomBridge.Listener {
         }
         callJobs += scope.launch {
             s.agentInRoom.collect { here -> if (here && inRoom) onAgentAnswered(info.callId) }
+        }
+        callJobs += scope.launch {
+            // Muted or unmuted outside the app (Android Auto, a watch): follow it.
+            telecom.systemMuted.collect { muted ->
+                val cur = _state.value as? CallUi.Active ?: return@collect
+                if (telecomActive && cur.muted != muted) {
+                    session?.setMuted(muted)
+                    _state.value = cur.copy(muted = muted)
+                }
+            }
         }
         callJobs += scope.launch {
             telecom.endpoint.collect { ep ->
@@ -559,9 +584,9 @@ class CallManager(private val context: Context) : TelecomBridge.Listener {
 
     // ---------------------------------------------------------------- Telecom callbacks
 
-    override fun onSystemAnswer() {
+    override fun onSystemAnswer(callId: String) {
         scope.launch {
-            answer()
+            answer(callId)
             // Answered from a headset/watch: bring up the call screen if Android lets us.
             runCatching {
                 context.startActivity(Intent(context, CallActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

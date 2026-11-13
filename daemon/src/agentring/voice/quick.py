@@ -7,9 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .agents import AgentsConfig, Consultations
-from .gemini import DEFAULT_MODEL, DEFAULT_VOICE, GeminiLive
-from .session import Prompts, VoiceAgent
-from .tools import McpClient, Tool, mcp_tools
+from .providers import PROVIDERS, VoiceChoice
+from .session import BeforeTool, CallSession, Prompts, VoiceAgent
+from .tools import McpClient, Tool, ToolCall, mcp_tools
 
 DEFAULT_INSTRUCTIONS = (
     "You are the user's AI agent talking to them on the phone. Speak like a person on a call: short, "
@@ -19,6 +19,15 @@ DEFAULT_INSTRUCTIONS = (
 
 
 MISSED_CALL = "Missed call: {reason}"
+NO_USER_YET = ("Not run: the user has not said anything on this call yet. Tell them what you would like to do and ask; "
+               "call it again once they have answered.")
+
+
+def after_user_speech(session: CallSession, call: ToolCall) -> str | None:
+    """A `before_tool` gate: no tool runs until someone on the call has spoken. For calls whose
+    context comes from another program (the MCP `call` tool), so that text alone cannot start
+    a tool. It goes by the user's transcript, which every built-in provider gives by default."""
+    return None if session.last_user_speech_at else NO_USER_YET
 
 
 def missed_call_message(relay, call_id: str, reason: str, details: str | None = None) -> str:
@@ -81,7 +90,7 @@ def configured_home_assistant_agent() -> BuiltAgent:
 
 
 async def build_agent(
-    api_key: str,
+    voice_ai: VoiceChoice | str,
     *,
     instructions: str | None = None,
     mcp: list[str] | None = None,
@@ -89,9 +98,15 @@ async def build_agent(
     agents: AgentsConfig | None = None,
     model: str | None = None,
     voice: str | None = None,
+    before_tool: BeforeTool | None = None,
 ) -> BuiltAgent:
-    """Gemini Live with the tools of the given MCP servers (only `allow` if given) and of
-    agents.yaml (its MCP servers, and `consult_agent` for its agents). Close it when done."""
+    """A voice AI (`resolve_voice(...)`, or a Gemini API key with `model`/`voice`) with the tools of
+    the given MCP servers (only `allow` if given) and of agents.yaml (its MCP servers, and
+    `consult_agent` for its agents). `before_tool` runs before every tool (see `VoiceAgent`).
+    Close it when done."""
+    if isinstance(voice_ai, str):
+        gemini = PROVIDERS["gemini"]
+        voice_ai = VoiceChoice(gemini, voice_ai, model or gemini.default_model, voice or gemini.default_voice)
     built = BuiltAgent(None, [])  # type: ignore[arg-type]
     tools: list[Tool] = []
     servers = [(url, allow, None) for url in mcp or []]
@@ -108,6 +123,5 @@ async def build_agent(
         built.consultations = Consultations(agents.agents)
         tools.append(built.consultations.tool())
     text = read_instructions(instructions)
-    built.agent = VoiceAgent(lambda: GeminiLive(api_key, model=model or DEFAULT_MODEL, voice=voice or DEFAULT_VOICE),
-                             text, tools)
+    built.agent = VoiceAgent(voice_ai.factory(), text, tools, before_tool=before_tool)
     return built

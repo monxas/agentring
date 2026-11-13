@@ -217,13 +217,20 @@ def test_mcp_outgoing_selects_existing_ha_backend(monkeypatch, tmp_path):
         pass
     monkeypatch.setattr(quick, 'configured_home_assistant_agent', lambda: SimpleNamespace(agent=SimpleNamespace(run=call), aclose=close))
     async def run():
-        tool = object.__new__(AgentringTools)
-        tool._call_lock = asyncio.Lock(); tool.agent_name = tool.device_ids = None
-        tool.client = SimpleNamespace(create_call=lambda *a, **kw: {'call': {'call_id': 'c1'}, 'join': {}})
+        from agentring.store import Store
+        client = SimpleNamespace(relay_url='http://127.0.0.1:1',
+                                 create_call=lambda *a, **kw: {'call': {'call_id': 'c1'}, 'join': {}},
+                                 get_call=lambda call_id: {'end_reason': 'hung_up'})
+        tool = AgentringTools(client, Store(tmp_path / 'mirror.db'))
         result = await tool.call('¿Seguimos?')
         assert seen == ['¿Seguimos?'] and result['transcript'] == [{'who': 'user', 'text': 'Sí'}]
         with pytest.raises(ToolError, match='manages its own context'):
             await tool.call('Reason', context='Do not silently discard this')
+        custom_agents = tmp_path / 'custom-agents.yaml'; custom_agents.write_text('agents: []')
+        tool.agents_file = custom_agents
+        with pytest.raises(ToolError, match='manages its own context'):
+            await tool.call('Reason')
+        tool.store.close()
     asyncio.run(run())
 
 

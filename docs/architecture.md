@@ -70,7 +70,8 @@ F1 scope: one user, one agent, Android only, self-hosted, no accounts.
     relay_client.py         # REST (httpx) + WS (websockets) with resume-from-seq
     store.py                # local SQLite mirror + transcripts
     http_api.py             # local HTTP API (Starlette)
-    mcp_server.py           # MCP tools (stdio + streamable HTTP)
+    mcp_server.py           # MCP tools + stdio transport
+    mcp_http.py             # MCP over Streamable HTTP, many users (agentring mcp-http)
     voice/                  # worker, prompts, consult_agent backends   (extra: [voice])
     models.py               # generated from /protocol (datamodel-code-generator, pydantic v2), committed
   tests/
@@ -152,8 +153,8 @@ CI fails if generated code is stale or a fixture doesn't round-trip.
    long-lived HS256 `device_jwt` checked against the device table on every
    request, so revocation is immediate.
 9. **`consult_agent` command backend uses an argv list, not a shell string**
-   (M3): `command: ["claude", "-p", "{task}"]`. The task comes from a voice
-   model and must never be interpolated into a shell.
+   (M3): `command: ["claude", "-p", "--", "{task}"]`. The task comes from a voice
+   model and must never be interpolated into a shell, or read as an option.
 10. **Single hostname** (M2): Caddy routes `/v1/*` to the relay and `/rtc*` to
     LiveKit, so the quickstart needs one DNS record. LiveKit's admin API
     (`/twirp*`) and the relay's LiveKit webhook are internal only (404 from
@@ -182,7 +183,7 @@ CI fails if generated code is stale or a fixture doesn't round-trip.
 |---|---|---|---|---|
 | **M1** | pairing, devices, messages, events + WS, FCM, SQLite | `pair`, `msg`, `replies`, `status`, `devices`, `serve` (relay sync only) | onboarding (notifications), QR pairing, FCM, messages thread, notification reply, settings | compose: caddy + relay |
 | **M2** | calls, ring timer, LiveKit rooms/tokens, webhook | `call`, worker in echo/tone mode | ConnectionService, CallStyle + FSI, DnD/alarm for urgent, LiveKit audio, call screen, full onboarding | + livekit |
-| **M3** | — | Gemini Live / OpenAI Realtime, `consult_agent`, `end_call`, transcripts + summaries, `--wait` | live transcript | — |
+| **M3** | — | Gemini Live / OpenAI Realtime (+ Grok Voice, Phonic), `consult_agent`, `end_call`, transcripts + summaries, `--wait` | live transcript | — |
 | **M4** | inbound calls, missed/declined | auto-accept inbound, missed → `msg.new` fallback | "Call agent", missed/declined UX | — |
 | **M5** | — | MCP server, local HTTP API | — | skill, examples, docs, quickstart |
 
@@ -193,11 +194,19 @@ CI fails if generated code is stale or a fixture doesn't round-trip.
   worker) and talks to the model's realtime WebSocket API directly through a small
   `RealtimeBackend` interface. Fewer dependencies (supply-chain policy) and full control
   of turn-taking, group-call mixing and tools. Details in [voice.md](voice.md).
+- **More voice providers** (M3, at the user's request, issue #12): besides Gemini Live
+  and OpenAI Realtime, Grok Voice (xAI, same protocol as OpenAI) and Phonic, each one
+  `RealtimeBackend` class. One setting picks it for the CLI and the MCP server alike
+  (`--provider` / `AGENTRING_VOICE_PROVIDER`); Gemini stays the default for its free tier.
 - **MCP server without the `mcp` SDK, stdio only** (M5, at the user's request):
   `agentring mcp` is a small JSON-RPC loop over stdin/stdout (`mcp_server.py`) with
   the tools `send_message`, `get_replies`, `call` and `status`; no new dependencies,
-  as for the voice side. Streamable HTTP is left out: HTTP-only clients (n8n) use the
-  relay's REST API. Details in [agents.md](agents.md).
+  as for the voice side. Details in [agents.md](agents.md).
+- **Remote MCP server over Streamable HTTP** (for agentring cloud, [cloud.md](cloud.md)):
+  `agentring mcp-http` (`mcp_http.py`) serves the same tools to many users at once,
+  each with their relay API key as bearer token; also without an SDK or web framework
+  (a small HTTP/1.1 server on asyncio streams). Both transports share one tools
+  implementation in `mcp_server.py`.
 - **`agents.yaml`** (M3): the voice AI's tools come from one file — command agents
   (consulted with `consult_agent`, argv lists only) and MCP servers with allowlists.
   A slow agent's answer reaches the call as a note, or the phone as a message once
@@ -223,3 +232,9 @@ the existing realtime backend interface using bounded speech turns, one HA conve
 per call, and direct Wyoming PCM synthesis. This is a daemon-only extension: no relay
 or mobile wire-protocol change. HA controls its own prompt/tool permissions; this
 backend does not import agentring MCP or command-agent tools. See `docs/voice.md`.
+- **agentring cloud: hub mode** (at the user's request, 2026-11-01): the relay can host
+  many isolated tenants (`AGENTRING_HUB=1`), each a full relay instance with its own
+  SQLite file under `/t/{tenant_id}`, plus an admin API for a control plane and
+  per-tenant limits (`402 quota_exceeded`, `end_reason: quota`). This lifts F1's "one
+  user, no accounts" for the hosted version only; self-hosted is unchanged. The control
+  plane (accounts, billing) lives in a private repo. Details in [cloud.md](cloud.md).

@@ -19,14 +19,14 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Registers the call with Android Telecom through Jetpack Core-Telecom, so the
- * system knows we're in a call (Bluetooth headset buttons, watches, cars,
- * audio routing, other calls). Optional: if the platform refuses, the call
+ * system knows we're in a call (Bluetooth headset buttons, watches, Android
+ * Auto's in-call view, audio routing, other calls). Optional: if the platform refuses, the call
  * still works with our own notification and audio routing.
  */
 class TelecomBridge(private val context: Context, private val scope: CoroutineScope) {
     interface Listener {
         /** The user answered from outside the app (headset, watch, car). */
-        fun onSystemAnswer()
+        fun onSystemAnswer(callId: String)
 
         /** Telecom ended the call (e.g. the user hung up from a headset, or another call took over). */
         fun onSystemDisconnect(cause: DisconnectCause)
@@ -48,11 +48,16 @@ class TelecomBridge(private val context: Context, private val scope: CoroutineSc
     private val _endpoints = MutableStateFlow<List<CallEndpointCompat>>(emptyList())
     val endpoints: StateFlow<List<CallEndpointCompat>> = _endpoints
     private val _muted = MutableStateFlow(false)
+    /** Telecom's mute, e.g. the mute button of Android Auto's in-call view. */
     val systemMuted: StateFlow<Boolean> = _muted
 
-    /** Adds an incoming call. Returns false (quickly) if Telecom can't take it. */
-    suspend fun addIncoming(displayName: String, callId: String, listener: Listener): Boolean =
-        add(displayName, callId, listener, CallAttributesCompat.DIRECTION_INCOMING)
+    /**
+     * Adds an incoming call. Returns false (quickly) if Telecom can't take it, or if
+     * [wanted] says the call ended while Telecom was adding it: then it is disconnected
+     * here, because a call left behind in Telecom blocks every later one.
+     */
+    suspend fun addIncoming(displayName: String, callId: String, listener: Listener, wanted: () -> Boolean): Boolean =
+        add(displayName, callId, listener, CallAttributesCompat.DIRECTION_INCOMING, wanted)
 
     /**
      * Adds a call this phone joins without ringing ("join the call" on a group call
@@ -62,7 +67,13 @@ class TelecomBridge(private val context: Context, private val scope: CoroutineSc
     suspend fun addOutgoing(displayName: String, callId: String, listener: Listener): Boolean =
         add(displayName, callId, listener, CallAttributesCompat.DIRECTION_OUTGOING)
 
-    private suspend fun add(displayName: String, callId: String, listener: Listener, direction: Int): Boolean {
+    private suspend fun add(
+        displayName: String,
+        callId: String,
+        listener: Listener,
+        direction: Int,
+        wanted: () -> Boolean = { true },
+    ): Boolean {
         val ready = CompletableDeferred<Boolean>()
         commands = Channel(Channel.UNLIMITED)
         val cmds = commands
@@ -78,7 +89,7 @@ class TelecomBridge(private val context: Context, private val scope: CoroutineSc
                 )
                 manager.addCall(
                     attrs,
-                    onAnswer = { listener.onSystemAnswer() },
+                    onAnswer = { listener.onSystemAnswer(callId) },
                     onDisconnect = { cause ->
                         Log.i(TAG, "telecom disconnect: $cause")
                         listener.onSystemDisconnect(cause)
@@ -113,6 +124,7 @@ class TelecomBridge(private val context: Context, private val scope: CoroutineSc
                 ready.complete(false)
                 _endpoint.value = null
                 _endpoints.value = emptyList()
+                _muted.value = false
             }
         }
         // addCall must not hold up the ringing; give it a moment, then go on without it.
@@ -120,6 +132,11 @@ class TelecomBridge(private val context: Context, private val scope: CoroutineSc
         if (ok == null) {
             Log.w(TAG, "Telecom addCall timed out")
             job?.cancel()
+        }
+        if (ok == true && !wanted()) {
+            // This call's own channel: a newer call may already have replaced `commands`.
+            cmds.trySend(Command.Disconnect(DisconnectCause.MISSED))
+            return false
         }
         return ok == true
     }

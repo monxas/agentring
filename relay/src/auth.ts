@@ -3,23 +3,25 @@ import { SignJWT, jwtVerify } from "jose";
 import type { Db } from "./db/database.js";
 import { unauthorized } from "./errors.js";
 
-export type Principal = { kind: "agent" } | { kind: "device"; deviceId: string };
+/** `expiresAt` marks a short-lived agent token (`at_…`, hub mode); a tenant API key has none. */
+export type Principal = { kind: "agent"; expiresAt?: number } | { kind: "device"; deviceId: string };
 
 export function sha256(s: string): Buffer {
   return createHash("sha256").update(s).digest();
 }
 
 export class Auth {
-  private readonly apiKeyHash: Buffer;
   private readonly jwtKey: Uint8Array;
 
+  /** `apiKeyHash` returns the SHA-256 of the current agent API key (it may change: hub mode rotates keys). */
   constructor(
     private readonly db: Db,
-    apiKey: string,
+    private readonly apiKeyHash: () => Buffer,
     jwtSecret: string,
     private readonly relayId: string,
+    /** Hub mode: when a short-lived agent token (`at_…`, by its SHA-256) expires, if it is valid for this tenant. */
+    private readonly agentToken?: (hash: Buffer) => number | undefined,
   ) {
-    this.apiKeyHash = sha256(apiKey);
     this.jwtKey = Buffer.from(jwtSecret, "base64url");
   }
 
@@ -40,7 +42,13 @@ export class Auth {
     const token = m[1]!;
 
     if (token.startsWith("ak_")) {
-      if (timingSafeEqual(sha256(token), this.apiKeyHash)) return { kind: "agent" };
+      if (timingSafeEqual(sha256(token), this.apiKeyHash())) return { kind: "agent" };
+      throw unauthorized();
+    }
+
+    if (token.startsWith("at_")) {
+      const expiresAt = this.agentToken?.(sha256(token));
+      if (expiresAt !== undefined) return { kind: "agent", expiresAt };
       throw unauthorized();
     }
 

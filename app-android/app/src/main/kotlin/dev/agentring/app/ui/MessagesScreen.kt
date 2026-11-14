@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -45,6 +46,7 @@ import dev.agentring.app.R
 import dev.agentring.app.data.Pairing
 import dev.agentring.app.notify.Notifications
 import dev.agentring.core.Message
+import dev.agentring.core.RelayException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -58,6 +60,7 @@ fun MessagesScreen(pairing: Pairing) {
     var input by rememberSaveable { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
     var sendError by remember { mutableStateOf<String?>(null) }
+    var overQuota by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     DisposableEffect(Unit) {
@@ -74,10 +77,30 @@ fun MessagesScreen(pairing: Pairing) {
     }
 
     Column(Modifier.fillMaxSize().imePadding()) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            val online by Graph.connection.agentOnline.collectAsStateWithLifecycle()
+            AgentAvatar(pairing.agentName, size = 40.dp, online = online)
+            Text(pairing.agentName, style = MaterialTheme.typography.titleLarge)
+        }
+        androidx.compose.material3.HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         if (messages.isEmpty()) {
-            Box(Modifier.weight(1f).fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+            Column(
+                Modifier.weight(1f).fillMaxWidth().padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+            ) {
+                HeroBadge(androidx.compose.ui.res.painterResource(R.drawable.ic_chat), size = 72.dp)
                 Text(
-                    stringResource(R.string.messages_empty),
+                    stringResource(R.string.messages_empty_title),
+                    style = MaterialTheme.typography.titleLarge,
+                    textAlign = TextAlign.Center,
+                )
+                Text(
+                    stringResource(R.string.messages_empty, pairing.agentName),
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.testTag("messages_empty"),
@@ -100,11 +123,12 @@ fun MessagesScreen(pairing: Pairing) {
 
         sendError?.let {
             Text(
-                stringResource(R.string.send_failed, it),
+                if (overQuota) stringResource(R.string.message_quota) else stringResource(R.string.send_failed, it),
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(horizontal = 16.dp),
             )
+            if (overQuota) PlanDashboardButton(pairing)
         }
         Row(
             Modifier.fillMaxWidth().padding(12.dp),
@@ -116,6 +140,7 @@ fun MessagesScreen(pairing: Pairing) {
                 onValueChange = { input = it },
                 placeholder = { Text(stringResource(R.string.message_hint, pairing.agentName)) },
                 maxLines = 5,
+                shape = RoundedCornerShape(24.dp),
                 modifier = Modifier.weight(1f).testTag("message_input"),
             )
             FilledIconButton(
@@ -125,22 +150,25 @@ fun MessagesScreen(pairing: Pairing) {
                     scope.launch {
                         sending = true
                         sendError = null
+                        overQuota = false
                         try {
+                            val generation = Graph.messages.generation
                             val api = Graph.api() ?: error("not paired")
                             val m = withContext(Dispatchers.IO) {
                                 api.postMessage(text, clientMsgId = UUID.randomUUID().toString())
                             }
-                            Graph.messages.upsert(m)
+                            Graph.messages.upsert(m, generation = generation)
                             input = ""
                         } catch (e: Exception) {
                             sendError = e.message ?: e.javaClass.simpleName
+                            overQuota = e is RelayException && e.code == "quota_exceeded"
                         } finally {
                             sending = false
                         }
                     }
                 },
                 enabled = input.isNotBlank() && !sending,
-                modifier = Modifier.testTag("send_button"),
+                modifier = Modifier.size(52.dp).testTag("send_button"),
             ) {
                 if (sending) {
                     CircularProgressIndicator(Modifier.padding(10.dp), strokeWidth = 2.dp)
@@ -164,7 +192,9 @@ private fun Bubble(m: Message, showRead: Boolean) {
                 topStart = 18.dp, topEnd = 18.dp,
                 bottomStart = if (mine) 18.dp else 4.dp, bottomEnd = if (mine) 4.dp else 18.dp,
             ),
-            color = if (mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+            color = if (mine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceContainer,
+            contentColor = if (mine) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface,
+            border = if (mine) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
             modifier = Modifier.widthIn(max = 300.dp),
         ) {
             Text(m.text, Modifier.padding(horizontal = 14.dp, vertical = 10.dp), style = MaterialTheme.typography.bodyLarge)

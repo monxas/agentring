@@ -17,7 +17,7 @@ import typer
 
 from . import __version__
 from .config import ConfigError, Settings, home_dir, load_settings, secret, write_settings
-from .relay_client import RelayClient, RelayError
+from .relay_client import InsecureRelayError, RelayClient, RelayError
 from .store import Store
 from .sync import FatalSyncError, catch_up, run_ws
 
@@ -31,15 +31,24 @@ devices_app = typer.Typer(help="List or revoke paired phones.", no_args_is_help=
 app.add_typer(devices_app, name="devices")
 agents_app = typer.Typer(help="Your agents the voice AI can consult (agents.yaml).", no_args_is_help=False)
 app.add_typer(agents_app, name="agents")
+voice_app = typer.Typer(help="Voice AI tools.", no_args_is_help=True)
+app.add_typer(voice_app, name="voice")
 
 JsonOpt = Annotated[bool, typer.Option("--json", help="Machine-readable JSON output.")]
-AiOpt = Annotated[bool, typer.Option("--ai", help="A voice AI (Gemini Live, needs GEMINI_API_KEY) talks on the call.")]
+AiOpt = Annotated[bool, typer.Option("--ai", help="A voice AI talks on the call (default Gemini Live; see --provider).")]
+ProviderOpt = Annotated[
+    Optional[str],
+    typer.Option("--provider", help="--ai: voice provider: gemini, openai, grok, phonic or local (default "
+                 "AGENTRING_VOICE_PROVIDER, else gemini). Each needs its key: GEMINI_API_KEY, OPENAI_API_KEY, "
+                 "XAI_API_KEY, PHONIC_API_KEY; local needs a server at AGENTRING_VOICE_URL (docs/voice.md)."),
+]
 InstructionsOpt = Annotated[
     Optional[str], typer.Option("--instructions", help="--ai: system prompt, or @file to read it from a file.")
 ]
 McpOpt = Annotated[Optional[list[str]], typer.Option("--mcp", help="--ai: MCP server URL whose tools the AI may use (repeatable).")]
 ToolsOpt = Annotated[Optional[str], typer.Option("--tools", help="--ai: comma-separated allowlist of MCP tools.")]
-ModelOpt = Annotated[Optional[str], typer.Option("--model", help="--ai: Gemini Live model (default gemini-3.8-live).")]
+ModelOpt = Annotated[Optional[str], typer.Option("--model", help="--ai: the provider's model (default AGENTRING_VOICE_MODEL, "
+                                                 "else e.g. gemini-3.8-live, gpt-realtime-2.1).")]
 AgentsFileOpt = Annotated[
     Optional[str],
     typer.Option("--agents", help="--ai: agents.yaml with your agents and MCP servers (default ~/.agentring/agents.yaml "
@@ -64,19 +73,34 @@ def _agents_config(path: str | None, *, required: bool = False) -> Any:
 
 
 async def _build_ai(instructions: str | None, mcp: list[str] | None, tools: str | None, model: str | None,
-                    voice: str | None, agents_file: str | None = None) -> Any:
+                    voice: str | None, agents_file: str | None = None, provider: str | None = None) -> Any:
     try:
         from .voice.quick import build_agent
     except ImportError:
         raise _fail("voice support is not installed: install agentring with the [voice] extra") from None
-    key = secret("GEMINI_API_KEY")
-    if not key:
-        raise _fail("--ai needs GEMINI_API_KEY (environment or ~/.agentring/.env)")
+    backend = secret("AGENTRING_VOICE_BACKEND") or "gemini"
+    if backend == "homeassistant":
+        if (provider not in (None, "homeassistant") or instructions or mcp or tools or model or voice or agents_file not in (None, "none")
+                or (agents_file is None and (home_dir() / "agents.yaml").exists())):
+            raise _fail("Home Assistant owns its prompt/model/tools/voice; omit these options and use --agents none")
+        from .voice.quick import configured_home_assistant_agent
+        try:
+            return configured_home_assistant_agent()
+        except (OSError, ValueError):
+            raise _fail("Cannot load Home Assistant voice configuration") from None
+    if backend != "gemini":
+        raise _fail("AGENTRING_VOICE_BACKEND must be gemini or homeassistant")
+    from .voice.providers import VoiceConfigError, resolve_voice
+
+    try:
+        choice = resolve_voice(provider, model, voice)
+    except VoiceConfigError as e:
+        raise _fail(f"--ai: {e}") from None
+    logging.getLogger("agentring").info("voice AI: %s (%s)", choice.provider.label, choice.model)
     allow = [t.strip() for t in tools.split(",") if t.strip()] if tools else None
     agents = _agents_config(agents_file)
     try:
-        return await build_agent(key, instructions=instructions, mcp=mcp, allow=allow, agents=agents, model=model,
-                                 voice=voice)
+        return await build_agent(choice, instructions=instructions, mcp=mcp, allow=allow, agents=agents)
     except OSError as e:
         raise _fail(f"cannot read the instructions: {e}") from None
 
@@ -160,6 +184,8 @@ def _root(
         stream=sys.stderr,
     )
     logging.getLogger("httpx").setLevel(logging.WARNING)
+    # At DEBUG websockets logs every handshake header, API keys included.
+    logging.getLogger("websockets").setLevel(logging.INFO)
 
 
 @app.command()
@@ -178,13 +204,15 @@ def init(
         raise _fail("--relay must be an http(s) URL")
     if not api_key.startswith("ak_"):
         raise _fail("--api-key must start with ak_")
-    with RelayClient(relay, api_key) as c:
-        try:
+    try:
+        with RelayClient(relay, api_key) as c:
             st = c.status()
-        except RelayError as e:
-            raise _fail(str(e)) from None
+    except (RelayError, InsecureRelayError) as e:
+        raise _fail(str(e)) from None
+    if not isinstance(st, dict) or not st.get("relay_id"):
+        raise _fail(f"{relay} did not answer like an agentring relay; nothing was saved")
     home = write_settings(relay, api_key)
-    typer.echo(f"Connected to relay {st['relay_id']} (agent name: {st['agent_name']}). Config saved in {home}")
+    typer.echo(f"Connected to relay {st['relay_id']} (agent name: {st.get('agent_name')}). Config saved in {home}")
 
 
 @app.command()
@@ -245,9 +273,10 @@ def call(
         Optional[str], typer.Option("--greeting", help="What the agent says when the user answers (default: the reason).")
     ] = None,
     voice: Annotated[
-        Optional[str], typer.Option("--voice", help="With --ai the model's voice (e.g. Charon); otherwise the macOS `say` voice.")
+        Optional[str], typer.Option("--voice", help="With --ai the model's voice (e.g. Charon, marin); otherwise the macOS `say` voice.")
     ] = None,
     ai: AiOpt = False,
+    provider: ProviderOpt = None,
     instructions: InstructionsOpt = None,
     mcp: McpOpt = None,
     tools: ToolsOpt = None,
@@ -260,7 +289,7 @@ def call(
     """Call the phone. Rings until answered (30 s). With --ai a voice AI talks to you; otherwise the agent greets and echoes you (audio test)."""
     if ai:
         return _ai_call(reason, urgent, agent_name, instructions, mcp, tools, model, voice, agents_file, fallback,
-                        json_out)
+                        json_out, provider)
     try:
         from .voice.echo import EchoWorker, synthesize
     except ImportError:
@@ -495,14 +524,14 @@ def devices_list(
 
 def _ai_call(reason: str, urgent: bool, agent_name: str | None, instructions: str | None, mcp: list[str] | None,
              tools: str | None, model: str | None, voice: str | None, agents_file: str | None, fallback: bool,
-             json_out: bool) -> None:
+             json_out: bool, provider: str | None = None) -> None:
     from .voice import CallInfo
 
     s = _settings()
     client = _client(s)
 
     async def run() -> Any:
-        built = await _build_ai(instructions, mcp, tools, model, voice, agents_file)
+        built = await _build_ai(instructions, mcp, tools, model, voice, agents_file, provider)
         agent = built.agent
         try:
             created = await asyncio.to_thread(
@@ -602,6 +631,81 @@ def agents_ask(
         raise _fail(str(e)) from None
 
 
+@voice_app.command("bench")
+def voice_bench(
+    provider: Annotated[Optional[str], typer.Option("--provider", help="gemini, openai, grok, phonic or local "
+                                                    "(default AGENTRING_VOICE_PROVIDER, else gemini).")] = None,
+    model: Annotated[Optional[str], typer.Option("--model", help="The provider's model (default AGENTRING_VOICE_MODEL, "
+                                                 "else the provider's default).")] = None,
+    voice: Annotated[Optional[str], typer.Option("--voice", help="The provider's voice.")] = None,
+    runs: Annotated[int, typer.Option("--runs", min=1, max=20, help="Sessions per prompt.")] = 3,
+    lang: Annotated[str, typer.Option("--lang", help="Language of the spoken prompts: en or es.")] = "en",
+    prompts: Annotated[Optional[str], typer.Option("--prompts", help="Directory with your own recordings "
+                                                   "(chat.wav, time.wav, chain.wav, consult.wav; 16-bit PCM) "
+                                                   "instead of the system's text-to-speech.")] = None,
+    out: Annotated[Optional[str], typer.Option("--out", help="Keep each session's audio (WAV) and results.jsonl here.")] = None,
+    instructions: Annotated[Optional[str], typer.Option("--instructions", help="System prompt instead of the one "
+                                                        "`call --ai` uses, or @file.")] = None,
+    json_out: JsonOpt = False,
+) -> None:
+    """Time a voice provider on the agentring phone-call test: 4 spoken prompts, the same demo tools.
+
+    Reports, per prompt, the median time from the end of speech to the first word, how often the right tools were called, and how often it spoke before a tool answered. Uses the provider's real API (and its minutes): about 12 short sessions with --runs 3.
+    """
+    from pathlib import Path
+
+    try:
+        from .voice import bench
+    except ImportError:
+        raise _fail("voice support is not installed: install agentring with the [voice] extra") from None
+    from .voice.providers import VoiceConfigError, resolve_voice
+
+    if lang not in bench.PROMPTS:
+        raise _fail(f"--lang: one of {', '.join(bench.PROMPTS)}")
+    try:
+        choice = resolve_voice(provider, model, voice)
+    except VoiceConfigError as e:
+        raise _fail(str(e)) from None
+    out_dir = Path(out).expanduser() if out else None
+    if out_dir:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        files = bench.prompt_files(Path(prompts).expanduser()) if prompts else bench.speak_prompts(lang, bench.temp_dir())
+    except (OSError, RuntimeError, ValueError) as e:
+        raise _fail(str(e)) from None
+    where = f" at {choice.url}" if choice.url else ""
+    if not json_out:
+        typer.echo(f"{choice.provider.label} ({choice.model}){where}: {len(bench.SCENARIOS)} prompts x {runs}")
+
+    def progress(s: Any) -> None:
+        if json_out:
+            return
+        took = f"{s.first_voice_s:.2f} s" if s.first_voice_s is not None else "no voice"
+        tools = ", ".join(s.tools) or "no tools"
+        typer.echo(f"  {s.scenario:<8} #{s.run + 1}  {took:<9} {tools}{'  ' + s.error if s.error else ''}")
+
+    from .voice.quick import read_instructions
+
+    try:
+        text = read_instructions(instructions) if instructions else None
+    except OSError as e:
+        raise _fail(f"cannot read the instructions: {e}") from None
+    sessions = asyncio.run(bench.run_bench(choice.factory(), files, runs=runs, out=out_dir, instructions=text,
+                                           on_session=progress))
+    summ = bench.summary(sessions)
+    if json_out:
+        typer.echo(json.dumps({"provider": choice.provider.name, "model": choice.model, "url": choice.url,
+                               "runs": runs, "lang": lang, "summary": summ}, ensure_ascii=False, indent=2))
+        return
+    typer.echo("")
+    typer.echo(f"{'prompt':<9}{'first voice':>12}{'right tools':>13}{'spoke before tool':>19}")
+    for name, r in summ.items():
+        fv = f"{r['first_voice_s']:.2f} s" if r["first_voice_s"] is not None else "-"
+        typer.echo(f"{name:<9}{fv:>12}{r['tools_ok']:>13}{(r['spoke_before_tool'] or '-'):>19}")
+    if out_dir:
+        typer.echo(f"\nAudio and results.jsonl in {out_dir}")
+
+
 @app.command()
 def mcp(
     agent_name: Annotated[Optional[str], typer.Option("--agent-name", help="Caller name the phone shows for this agent's calls.")] = None,
@@ -610,7 +714,44 @@ def mcp(
     """Run as an MCP server over stdio, for agents: `claude mcp add agentring -- agentring mcp`."""
     from .mcp_server import run_stdio
 
-    run_stdio(_settings(), agent_name=agent_name, device_ids=device or None)
+    try:
+        settings = load_settings()
+    except ConfigError as e:
+        # Start anyway: the agent sees the tools and learns from the first call what is missing.
+        typer.echo(f"agentring mcp: {e}", err=True)
+        run_stdio(None, not_configured=str(e))
+        return
+    run_stdio(settings, agent_name=agent_name, device_ids=device or None)
+
+
+@app.command("mcp-http")
+def mcp_http(
+    host: Annotated[Optional[str], typer.Option("--host", help="Address to bind (default AGENTRING_MCP_HOST, else 127.0.0.1).")] = None,
+    port: Annotated[Optional[int], typer.Option("--port", help="Port (default AGENTRING_MCP_PORT, else 8790).")] = None,
+    relay_url: Annotated[Optional[str], typer.Option("--relay-url", help="The relay every API key is used against "
+                                                     "(default AGENTRING_RELAY_URL). With a hub (AGENTRING_HUB_ADMIN_URL), "
+                                                     "the relay's internal address.")] = None,
+    data_dir: Annotated[Optional[str], typer.Option("--data-dir", help="Per-user state (default AGENTRING_MCP_DATA_DIR, "
+                                                    "else ~/.agentring/mcp-http).")] = None,
+    max_calls: Annotated[Optional[int], typer.Option("--max-calls", help="Voice calls at once, all users together "
+                                                     "(default AGENTRING_MCP_MAX_CALLS, else 4).")] = None,
+    max_body: Annotated[Optional[int], typer.Option("--max-body", help="Largest request body in bytes "
+                                                    "(default AGENTRING_MCP_MAX_BODY, else 1 MiB).")] = None,
+    allow_origin: Annotated[Optional[list[str]], typer.Option("--allow-origin", help="Browser Origin allowed to use "
+                                                              "/mcp, repeatable; '*' = any (default "
+                                                              "AGENTRING_MCP_ALLOWED_ORIGINS, comma-separated; else none).")] = None,
+) -> None:
+    """Run as a remote MCP server (Streamable HTTP at /mcp) for many users; each sends its relay API key."""
+    from pathlib import Path
+
+    from .mcp_http import HttpConfig, run_http
+
+    try:
+        cfg = HttpConfig.from_env(host=host, port=port, relay_url=relay_url, data_dir=Path(data_dir) if data_dir else None,
+                                  max_calls=max_calls, max_body=max_body, allowed_origins=allow_origin or None)
+    except ConfigError as e:
+        raise _fail(str(e)) from None
+    run_http(cfg)
 
 
 def _describe(event: dict[str, Any]) -> str | None:
@@ -627,12 +768,13 @@ def _describe(event: dict[str, Any]) -> str | None:
 
 @app.command()
 def serve(
-    ai: Annotated[bool, typer.Option("--ai", help="Answer calls from the phone with a voice AI (needs GEMINI_API_KEY).")] = False,
+    ai: Annotated[bool, typer.Option("--ai", help="Answer calls from the phone with a voice AI (see --provider).")] = False,
+    provider: ProviderOpt = None,
     instructions: InstructionsOpt = None,
     mcp: McpOpt = None,
     tools: ToolsOpt = None,
     model: ModelOpt = None,
-    voice: Annotated[Optional[str], typer.Option("--voice", help="--ai: the model's voice (e.g. Charon).")] = None,
+    voice: Annotated[Optional[str], typer.Option("--voice", help="--ai: the model's voice (e.g. Charon, marin).")] = None,
     agents_file: AgentsFileOpt = None,
 ) -> None:
     """Run the daemon: keeps a live connection to the relay. With --ai, answers the phone's calls with a voice AI."""
@@ -676,7 +818,7 @@ def serve(
         _signals(stop)
         built: Any = None
         if ai:
-            built = await _build_ai(instructions, mcp, tools, model, voice, agents_file)
+            built = await _build_ai(instructions, mcp, tools, model, voice, agents_file, provider)
             voice_agent = built.agent
             log.info("answering calls with %d tools", len(voice_agent.tools))
         log.info("agentring %s serving; relay %s", __version__, s.relay_url)
@@ -695,6 +837,48 @@ def serve(
         client.close()
         store.close()
     log.info("stopped")
+
+
+@app.command()
+def connect(
+    harness: Annotated[str, typer.Argument(help="The agent harness to connect: openclaw or hermes.")],
+    url: Annotated[Optional[str], typer.Option(
+        "--url", help="Use a remote MCP server instead of the local one, e.g. https://agentring.io/mcp. "
+        "The API key comes from AGENTRING_API_KEY (or this machine's agentring config).")] = None,
+    skill: Annotated[bool, typer.Option("--skill/--no-skill", help="Install the agentring skill.")] = True,
+    consult: Annotated[bool, typer.Option(
+        "--consult/--no-consult", help="Add the harness to agents.yaml, so the voice AI can consult it on a call "
+        "(local MCP only).")] = True,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show what would change; change nothing.")] = False,
+    json_out: JsonOpt = False,
+) -> None:
+    """Connect OpenClaw or Hermes: MCP server, skill and agents.yaml. Safe to run again."""
+    from dataclasses import asdict
+
+    from .config import secret
+    from .connect import ConnectError, connect as do_connect
+
+    api_key = None
+    if url:
+        api_key = secret("AGENTRING_API_KEY")
+        if not api_key:
+            raise _fail("--url needs the API key: set AGENTRING_API_KEY (ak_…), e.g. "
+                        "`AGENTRING_API_KEY=ak_... agentring connect hermes --url …`")
+    try:
+        steps = do_connect(harness.lower(), url=url, api_key=api_key, skill=skill, consult=consult, dry_run=dry_run)
+    except ConnectError as e:
+        raise _fail(str(e)) from None
+    if json_out:
+        _emit_json({"harness": harness.lower(), "dry_run": dry_run, "steps": [asdict(s) for s in steps]})
+        return
+    for s in steps:
+        typer.echo(f"{s.what:<20} {s.status:<12} {s.detail}".rstrip())
+    if dry_run:
+        return
+    if harness.lower() == "openclaw":
+        typer.echo("\nOpenClaw picks it up on the next turn. Check: openclaw mcp probe agentring")
+    else:
+        typer.echo("\nIn Hermes, run /reload-mcp or start a new session. Check: hermes mcp test agentring")
 
 
 def main() -> None:

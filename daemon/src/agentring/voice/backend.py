@@ -1,4 +1,4 @@
-"""The plug point for realtime speech-to-speech models (Gemini Live today; OpenAI Realtime next).
+"""The plug point for realtime speech-to-speech models (Gemini, Home Assistant/Wyoming, OpenAI, Grok, Phonic).
 
 A backend turns a model's wire protocol into a few plain events. The call session
 (session.py) never sees a provider's JSON, so adding a provider means one class.
@@ -68,9 +68,12 @@ class RealtimeBackend(Protocol):
 
     async def send_audio(self, pcm: bytes) -> None: ...
 
-    async def send_text(self, text: str, *, respond: bool) -> None:
+    async def send_text(self, text: str, *, respond: bool, trusted: bool = True) -> None:
         """A text note in the conversation (who joined, why we're calling…). With
-        `respond`, the model answers it out loud; otherwise it just knows it."""
+        `respond`, the model answers it out loud; otherwise it just knows it. `trusted`
+        is False when the text is another program's output (a late `consult_agent` answer):
+        a backend must not give it the authority of the instructions. Optional: a backend
+        without this parameter gets such notes like any other."""
 
     async def send_tool_results(self, results: list[ToolResult]) -> None: ...
 

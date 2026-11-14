@@ -40,6 +40,7 @@ class CallInfo:
     call_id: str
     reason: str = ""
     direction: str = "agent_to_user"  # or user_to_agent (the user called the agent)
+    device_ids: list[str] | None = None  # a targeted call: private to these phones (messages reach every phone)
 
     @property
     def inbound(self) -> bool:
@@ -61,6 +62,10 @@ class Prompts:
     left: str = "({name} hung up; still on the call: {others}.)"
     end_call: str = "End the call once the user says goodbye or asks you to hang up (say goodbye first)."
     tool_timeout: str = "Still running after {seconds} s; it carries on in the background. Tell the user."
+    # Added to the instructions when the call has tools: some models go quiet until a tool answers,
+    # which on a phone sounds like the line dropped. "" leaves the instructions as they are.
+    before_tools: str = ("Before you call a tool, say a few words first so the line is never silent (for example "
+                         "\"let me check\"), then call it. Never answer from memory what a tool should tell you.")
     someone: str = "the user"
     joiner: str = " and "
 
@@ -166,7 +171,7 @@ class CallSession:
         self.answered_at: float | None = None
         self._hangup_at = 0.0
         self._empty: asyncio.TimerHandle | None = None
-        self._notes: asyncio.Queue[tuple[str, bool]] = asyncio.Queue()
+        self._notes: asyncio.Queue[tuple[str, bool, bool]] = asyncio.Queue()
         self._tasks: list[asyncio.Task] = []
         self._streams: list[rtc.AudioStream] = []
         self._frame = self.backend.output_rate // 100 * 2  # 10 ms of PCM16
@@ -190,9 +195,10 @@ class CallSession:
     def names(self) -> str:
         return self.prompts.joiner.join(self.participants) or self.prompts.someone
 
-    def notify(self, text: str, *, respond: bool = False) -> None:
-        """Tell the model something once it finishes its current sentence."""
-        self._notes.put_nowait((text, respond))
+    def notify(self, text: str, *, respond: bool = False, trusted: bool = True) -> None:
+        """Tell the model something once it finishes its current sentence. `trusted=False`
+        when the text comes from outside the session (another program's output)."""
+        self._notes.put_nowait((text, respond, trusted))
 
     def hang_up(self) -> None:
         """End the call after the model finishes what it is saying."""
@@ -264,9 +270,14 @@ class CallSession:
     async def _send_loop(self) -> None:
         while True:
             await asyncio.sleep(0.02)
-            pcm = self.take_mixed_input()
-            if pcm:
-                await self.backend.send_audio(pcm)
+            await self.send_pending_input()
+
+    async def send_pending_input(self) -> None:
+        """Sends the waiting input in 40 ms chunks: a backlog (e.g. at the start of a call)
+        must not go out as one long chunk, which Phonic rejects (max 40 ms)."""
+        pcm = self.take_mixed_input()
+        for i in range(0, len(pcm), self._chunk):
+            await self.backend.send_audio(pcm[i : i + self._chunk])
 
     async def _play_loop(self) -> None:
         silence = b"\0" * self._frame
@@ -284,11 +295,13 @@ class CallSession:
             await self.source.capture_frame(rtc.AudioFrame(frame, self.backend.output_rate, 1, self._frame // 2))
 
     async def _notes_loop(self) -> None:
+        # `trusted` is optional in a backend: one written before it existed keeps working.
+        provenance = "trusted" in inspect.signature(self.backend.send_text).parameters
         while True:
-            text, respond = await self._notes.get()
+            text, respond, trusted = await self._notes.get()
             while self.output or time.time() - self.last_agent_audio_at < 0.8:
                 await asyncio.sleep(0.2)
-            await self.backend.send_text(text, respond=respond)
+            await self.backend.send_text(text, respond=respond, **({"trusted": trusted} if provenance else {}))
 
     # ------------------------------------------------------------ model
 
@@ -316,7 +329,7 @@ class CallSession:
                 text = self.partial[role].strip()
                 if text:
                     self.transcript.append((role, text))
-                    log.info("%s: %s", role, text[:200])
+                    log.debug("%s: %s", role, text[:200])  # what was said stays out of production logs
                 self.partial[role] = ""
         elif isinstance(ev, SessionEnding):
             log.warning("the model will close the session soon: %s", ev.detail)
@@ -379,7 +392,10 @@ class CallSession:
 
     async def _instructions(self) -> str:
         ins = self.agent.instructions
-        return await _maybe_await(ins(self.info)) if callable(ins) else ins
+        text = await _maybe_await(ins(self.info)) if callable(ins) else ins
+        if self.tools and self.prompts.before_tools:
+            text = f"{text.rstrip()}\n\n{self.prompts.before_tools}"
+        return text
 
     async def _connect_model(self) -> None:
         await self.backend.connect(await self._instructions(), self.tool_specs())

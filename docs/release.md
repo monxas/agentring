@@ -165,3 +165,70 @@ The same names also work as Gradle properties (`-PAGENTRING_KEYSTORE_FILE=…`).
 Without `AGENTRING_KEYSTORE_FILE`, `assembleRelease` still works but signs with the
 public debug key and prints a warning: fine for testing, never publish that APK.
 Without `-PversionName`/`-PversionCode` the build is `0.2.0-dev` / `1`.
+
+## Google Play
+
+Play takes an Android App Bundle (AAB), not an APK. Build it with the release key, which
+then acts as Play's *upload key* (enrol in Play App Signing when creating the app):
+
+```bash
+cd app-android
+export AGENTRING_KEYSTORE_FILE=/path/to/agentring-release.jks
+export AGENTRING_KEYSTORE_PASSWORD=… AGENTRING_KEY_ALIAS=… AGENTRING_KEY_PASSWORD=…
+AGENTRING_REQUIRE_RELEASE_KEY=1 ./gradlew :app:bundleRelease -PversionName=0.3.0 -PversionCode=30099
+# -> app/build/outputs/bundle/release/app-release.aab
+```
+
+`versionCode` must grow with every upload. The app targets API 36, which Play requires
+for new apps and updates from 2026-08-31.
+
+**Android Auto stays out of production bundles.** Google Play takes calling apps for cars
+only on its internal and closed testing tracks and rejects a production or open-testing
+release that contains one, so `bundleRelease` leaves the car entry point out by default.
+For a closed-testing track with Android Auto, build a separate bundle with
+`-PagentringAndroidAuto=true` and a higher `versionCode`, and never promote it to
+production ([android-auto.md](android-auto.md)). The GitHub APK always includes it.
+
+Play Console items this app needs:
+
+- **Privacy policy:** `https://agentring.io/privacy`. **Account deletion:**
+  `https://agentring.io/delete-account` (accounts exist only on agentring cloud; they are
+  deleted from the dashboard or by email). Self-hosted users have no account.
+- **Full-screen intent** (`USE_FULL_SCREEN_INTENT`): declare "calling app" — incoming calls
+  show over the lock screen.
+- **Foreground service types** `phoneCall` and `microphone`: declare them with a short video
+  of an incoming call being answered (an agent calls, the phone rings locked, the call runs).
+- **`REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`:** restricted on Play. Justify it as a calling
+  app whose calls must ring in Doze; if review rejects it, a Play build can drop the
+  permission and open `Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS` instead.
+- **Data safety:** microphone audio during calls (sent to the user's relay / voice AI,
+  not stored by the app), messages, device identifiers and the FCM token; data in transit
+  is encrypted (https/wss); the user can delete it (unpair, or delete the cloud account).
+- New personal developer accounts must run a closed test (12+ testers, 14 days) before
+  production; organisation accounts don't.
+
+## Directories
+
+Where agentring is listed, and what to refresh after a release:
+
+- **MCP Registry** (`registry.modelcontextprotocol.io`, feeds GitHub's registry and other
+  directories): [`server.json`](../server.json) lists the hosted server
+  (`https://agentring.io/mcp`) as `io.github.mutonby/agentring`. Set its `version` to the
+  release, then `mcp-publisher validate`, `mcp-publisher login github` and
+  `mcp-publisher publish` from the repository root. A version can be published once.
+- **Grok Build plugin marketplace** (`xai-org/plugin-marketplace`):
+  [`plugins/agentring`](../plugins/agentring) is the plugin (the hosted MCP server and a
+  copy of the skill; a test keeps the copy equal). The catalog entry pins a commit of this
+  repository, so after changing the plugin or the skill, open a PR there that bumps the
+  `sha` and regenerates the index (its CONTRIBUTING.md has the commands).
+- **skills.sh**: nothing to publish. It lists `skills/agentring` from this repository as
+  people install it (`npx skills add mutonby/agentring`).
+- **Glama** (`glama.ai/mcp/servers/mutonby/agentring`): it builds the server from this
+  repository with the settings on its admin page (build step `uv sync --project daemon
+  --frozen --no-dev`, command `uv run --project daemon --no-sync agentring mcp`, Python
+  3.12, placeholder relay URL and API key) and checks that it starts and lists its tools.
+  Auto-release is on: it rebuilds on every GitHub release.
+- **awesome-mcp-servers** (`punkpeye/awesome-mcp-servers`, Communication): one line in
+  its README; only needs a PR if the description changes.
+- **ClawHub**: `clawhub skill publish skills/agentring --slug agentring --version <x.y.z>`
+  after changing the skill.

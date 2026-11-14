@@ -1,6 +1,7 @@
 package dev.agentring.app.ui
 
 import android.Manifest
+import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.media.AudioManager
@@ -24,6 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
@@ -35,9 +37,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -46,13 +50,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import dev.agentring.app.Graph
 import dev.agentring.app.R
 import dev.agentring.app.call.CallInfo
 import dev.agentring.app.call.CallPermissions
 import dev.agentring.app.call.CallUi
+import dev.agentring.app.call.LockScreenPrivacy
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -66,6 +73,12 @@ class CallActivity : ComponentActivity() {
 
     /** Runs once the microphone permission dialog is answered. */
     private var afterMic: (() -> Unit)? = null
+
+    /** Waiting for the user to get past the lock screen before joining. */
+    private var awaitingUnlock = false
+
+    /** The reason stays off the screen while locked if the user hides sensitive content there. */
+    private val hideReason = mutableStateOf(false)
 
     private val micPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
         // Go on either way: without the mic the user can still hear the agent.
@@ -87,13 +100,24 @@ class CallActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         volumeControlStream = AudioManager.STREAM_VOICE_CALL
         enableEdgeToEdge()
-        handle(intent)
+        updateHideReason()
+        // A recreated activity (configuration change) must not act on its launch intent again.
+        if (savedInstanceState == null) handle(intent)
 
+        // There is no reliable callback for the lock state while this activity covers the keyguard.
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                while (true) {
+                    updateHideReason()
+                    delay(LOCK_CHECK_MS)
+                }
+            }
+        }
         lifecycleScope.launch {
             Graph.calls.state.collect { s ->
                 updateProximity(s)
-                // Not while asking for the microphone before joining: there's no call state yet.
-                if (s == null && afterMic == null) finishAndRemoveTask()
+                // Not while unlocking or asking for the microphone before joining: there's no call state yet.
+                if (s == null && afterMic == null && !awaitingUnlock) finishAndRemoveTask()
             }
         }
         setContent {
@@ -102,7 +126,8 @@ class CallActivity : ComponentActivity() {
                 state?.let {
                     CallScreen(
                         it,
-                        onAnswer = ::answer,
+                        hideReason = hideReason.value,
+                        onAnswer = { answer(it.info.callId) },
                         onDecline = Graph.calls::decline,
                         onHangUp = Graph.calls::hangUp,
                         onMute = Graph.calls::toggleMute,
@@ -115,19 +140,57 @@ class CallActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         handle(intent)
     }
 
     private fun handle(intent: Intent?) {
         when (intent?.action) {
-            ACTION_ANSWER -> answer()
-            ACTION_JOIN -> infoFrom(intent)?.let { info -> withMic { Graph.calls.join(info) } }
+            ACTION_ANSWER -> intent.getStringExtra(EXTRA_CALL_ID)?.let(::answer)
+            ACTION_JOIN -> infoFrom(intent)?.let { info -> afterUnlock { withMic { Graph.calls.join(info) } } }
         }
     }
 
-    private fun answer() {
-        if (Graph.calls.state.value !is CallUi.Incoming) return
-        withMic { Graph.calls.answer() }
+    private fun answer(callId: String) {
+        val ringing = Graph.calls.state.value as? CallUi.Incoming ?: return
+        if (ringing.info.callId != callId) return
+        withMic { Graph.calls.answer(callId) }
+    }
+
+    /**
+     * Joining opens the microphone on a call the phone isn't ringing for, so unlike
+     * answering it needs the user past the lock screen.
+     */
+    private fun afterUnlock(action: () -> Unit) {
+        val keyguard = getSystemService(KeyguardManager::class.java)
+        if (!keyguard.isKeyguardLocked) {
+            action()
+            return
+        }
+        awaitingUnlock = true
+        keyguard.requestDismissKeyguard(
+            this,
+            object : KeyguardManager.KeyguardDismissCallback() {
+                override fun onDismissSucceeded() {
+                    awaitingUnlock = false
+                    action()
+                }
+
+                override fun onDismissCancelled() = stayedLocked()
+
+                override fun onDismissError() = stayedLocked()
+            },
+        )
+    }
+
+    private fun stayedLocked() {
+        awaitingUnlock = false
+        if (Graph.calls.state.value == null) finishAndRemoveTask()
+    }
+
+    private fun updateHideReason() {
+        hideReason.value = getSystemService(KeyguardManager::class.java).isDeviceLocked &&
+            LockScreenPrivacy.hidesSensitiveContent(this)
     }
 
     private fun withMic(action: () -> Unit) {
@@ -163,10 +226,18 @@ class CallActivity : ComponentActivity() {
         private const val EXTRA_AGENT_NAME = "agent_name"
         private const val EXTRA_REASON = "reason"
         private const val EXTRA_URGENT = "urgent"
+        private const val LOCK_CHECK_MS = 500L
 
         /** Opens the call screen for the call to the agent that [dev.agentring.app.call.CallManager.callAgent] placed. */
         fun outgoingIntent(context: Context): Intent =
             Intent(context, CallActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+
+        /** Opens the call screen and answers [callId], if that is the call ringing by then. */
+        fun answerIntent(context: Context, callId: String): Intent =
+            Intent(context, CallActivity::class.java)
+                .setAction(ACTION_ANSWER)
+                .putExtra(EXTRA_CALL_ID, callId)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
 
         /** Opens the call screen and joins [info]'s call ("join the call"). */
         fun joinIntent(context: Context, info: CallInfo): Intent =
@@ -197,6 +268,7 @@ private val Red = Color(0xFFD93A3A)
 @Composable
 fun CallScreen(
     state: CallUi,
+    hideReason: Boolean,
     onAnswer: () -> Unit,
     onDecline: () -> Unit,
     onHangUp: () -> Unit,
@@ -204,7 +276,13 @@ fun CallScreen(
     onSpeaker: () -> Unit,
 ) {
     val info = state.info
-    Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF101418), contentColor = Color.White) {
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Brush.radialGradient(listOf(Color(0xFF3A1F12), Color(0xFF0C0F12)), radius = 1400f, center = androidx.compose.ui.geometry.Offset(540f, 0f))),
+        color = Color.Transparent,
+        contentColor = Color.White,
+    ) {
         Column(
             Modifier.fillMaxSize().safeDrawingPadding().padding(horizontal = 32.dp, vertical = 48.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -218,10 +296,17 @@ fun CallScreen(
                 )
                 Spacer(Modifier.height(16.dp))
             }
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier.size(104.dp).background(Brush.linearGradient(listOf(Color(0xFFFF8A4C), Color(0xFFC2410C))), CircleShape),
+            ) {
+                Text(info.agentName.trim().take(1).uppercase().ifEmpty { "A" }, fontSize = 44.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
+            }
+            Spacer(Modifier.height(20.dp))
             Text(info.agentName, fontSize = 34.sp, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center, modifier = Modifier.testTag("call_agent"))
             Spacer(Modifier.height(10.dp))
             Text(statusText(state), fontSize = 18.sp, color = Color(0xFFB8C4CC), modifier = Modifier.testTag("call_status"))
-            if (info.reason.isNotBlank()) {
+            if (info.reason.isNotBlank() && !hideReason) {
                 Spacer(Modifier.height(28.dp))
                 Text(
                     info.reason,

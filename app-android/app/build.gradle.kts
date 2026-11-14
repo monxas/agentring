@@ -24,18 +24,28 @@ if (releaseKeystore == null && buildsRelease) {
     )
 }
 
+// Android Auto (docs/android-auto.md). Google Play takes calling apps for cars only on its
+// internal and closed testing tracks and rejects them on open testing and production, so
+// release builds leave the car entry point out unless -PagentringAndroidAuto=true (the
+// GitHub APK, a closed-testing bundle). Debug builds always include it.
+val androidAuto = providers.gradleProperty("agentringAndroidAuto").orNull == "true"
+
 android {
     namespace = "dev.agentring.app"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "dev.agentring.app"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         // Release builds pass both: -PversionName=0.2.0 -PversionCode=20099 (see docs/release.md).
         versionCode = providers.gradleProperty("versionCode").orNull?.toInt() ?: 1
         versionName = providers.gradleProperty("versionName").orNull ?: "0.2.0-dev"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // Hosted agentring (docs/cloud.md), offered in the setup tutorial; -PagentringCloudUrl= (empty) hides it.
+        val cloudUrl = providers.gradleProperty("agentringCloudUrl").orNull ?: "https://agentring.io"
+        require(cloudUrl.isEmpty() || cloudUrl.startsWith("https://")) { "agentringCloudUrl must be https://" }
+        buildConfigField("String", "CLOUD_URL", "\"$cloudUrl\"")
     }
 
     signingConfigs {
@@ -63,7 +73,9 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName(if (releaseKeystore != null) "release" else "debug")
         }
     }
@@ -104,6 +116,8 @@ dependencies {
     implementation(project(":core"))
 
     implementation(libs.androidx.core.ktx)
+    // Espresso 3.7 needs 1.2.0; the app's own graph resolves 1.1.0 and Kotlin 2.4 makes the test classpath match it.
+    implementation(libs.androidx.concurrent.futures)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.process)
@@ -123,6 +137,12 @@ dependencies {
     implementation(libs.play.services.code.scanner)
     implementation(libs.livekit.android)
     implementation(libs.androidx.core.telecom)
+    implementation(libs.androidx.car.app)
+    constraints {
+        implementation(libs.guava) { because("car-app's Guava 31.1 has OSV advisories") }
+    }
+    debugImplementation(project(":auto"))
+    if (androidAuto) releaseImplementation(project(":auto"))
 
     androidTestImplementation(platform(libs.compose.bom))
     androidTestImplementation(libs.compose.ui.test.junit4)

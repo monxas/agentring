@@ -5,9 +5,14 @@ long job, your phone rings like a real call, even locked and in Doze. A voice AI
 you what's going on, you talk it through, and the agent gets the transcript and carries
 on. You can also call your agents back from the app and ask them things by voice.
 
-Self-hosted and open source. No phone numbers, no Twilio, no per-minute fees: calls go
-over VoIP from your own server to your own phone.
+Open source, with no phone numbers, no Twilio and no per-minute telephony fees: calls go
+over VoIP straight to the app. Use the hosted version at [agentring.io](https://agentring.io),
+or run everything on your own server.
 
+[![Get it on Google Play](https://img.shields.io/badge/Google_Play-Get_the_app-1f1f1f?style=for-the-badge&logo=googleplay&logoColor=white)](https://play.google.com/store/apps/details?id=dev.agentring.app&referrer=utm_source%3Dgithub%26utm_medium%3Dreadme)
+[![Try it hosted, free](https://img.shields.io/badge/agentring.io-Try_it_hosted%2C_free-c2410c?style=for-the-badge)](https://agentring.io/login)
+
+[![GitHub stars](https://img.shields.io/github/stars/mutonby/agentring?style=flat&logo=github)](https://github.com/mutonby/agentring/stargazers)
 [![CI](https://github.com/mutonby/agentring/actions/workflows/ci.yml/badge.svg)](https://github.com/mutonby/agentring/actions/workflows/ci.yml)
 [![Android](https://github.com/mutonby/agentring/actions/workflows/android.yml/badge.svg)](https://github.com/mutonby/agentring/actions/workflows/android.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
@@ -19,9 +24,26 @@ calls the locked phone, you decide, it carries on. The phone is a screen recordi
 audio (the ringtone was added), the terminal is redrawn from Claude Code's output, and only the waits were cut. Silent
 version: [demo.gif](docs/media/demo.gif).*
 
-> **Pre-release.** Messages, calls on a locked phone, the voice AI, calling your agent
-> from the app and the MCP server all work. So far it has been tested on one phone
-> (Pixel 6, Android 16). Android only for now.
+## Try it in five minutes
+
+With the hosted version there is no server, Firebase project or voice AI key to set up.
+
+1. **Install the app** from [Google Play](https://play.google.com/store/apps/details?id=dev.agentring.app&referrer=utm_source%3Dgithub%26utm_medium%3Dreadme) (Android 8 or newer).
+2. **[Sign in at agentring.io](https://agentring.io/login)** with your email (free plan, no
+   card) and scan the QR code on your dashboard with the app. The phone is paired.
+3. **Add the MCP server to your agent.** The dashboard shows the command with your key:
+
+   ```bash
+   claude mcp add --transport http agentring https://agentring.io/mcp \
+     --header "Authorization: Bearer ak_…"
+   ```
+
+Then ask your agent: *"run the migration and call me if anything fails."*
+
+The free plan has 1 phone, 10 call minutes a month with the voice AI included, and 100
+messages a day. Other agents (Codex, opencode, OpenClaw, Hermes, n8n):
+[docs/agents.md](docs/agents.md#recipes-by-harness). To run it all yourself instead, see
+[Self-hosting](#self-hosting).
 
 ## What it does
 
@@ -48,40 +70,26 @@ and anything you can run as a command can be consulted from a call.
 | Claude Code | MCP | `claude -p` |
 | Codex | MCP | `codex exec` |
 | opencode | MCP | `opencode run` |
+| Grok Build | MCP, or the [plugin](plugins/agentring) | |
 | OpenClaw | MCP | `openclaw agent` |
 | Hermes | MCP | `hermes -z` |
 | n8n, scripts, anything with HTTP | REST API, CLI | any command, or a small script for an HTTP agent |
 
-Copy-paste setup for each: [docs/agents.md](docs/agents.md#recipes-by-harness).
+Copy-paste setup for each: [docs/agents.md](docs/agents.md#recipes-by-harness). OpenClaw and
+Hermes have one command for all of it: `agentring connect openclaw` / `agentring connect hermes`,
+or install the [skill](skills/agentring) and ask your agent to set agentring up.
 
-## How it works
+The skill installs in any harness that reads skills with `npx skills add mutonby/agentring`
+([skills.sh](https://skills.sh/mutonby/agentring)), and from ClawHub as `@mutonby/agentring`.
 
-```
- your agent ──MCP/CLI──▶ daemon ──WSS (outbound only)──▶ relay ──FCM push──▶ Android app
-     ▲                     │                      (your server)                   │
-     └── agents.yaml ◀── voice AI (Gemini Live) ◀───── LiveKit (call audio) ───────┘
-```
+## Self-hosting
 
-- **relay** (TypeScript): pairing, messages, call state, push, LiveKit tokens. Runs on
-  your server behind Caddy.
-- **LiveKit**: the call audio, self-hosted in the same compose file.
-- **daemon** (Python): the `agentring` CLI, the MCP server and the voice AI. Runs next
-  to your agents, behind NAT is fine.
-- **Android app** (Kotlin): QR pairing, the native call screen, messages.
-
-The voice AI is the voice, your agent is the brain: Gemini Live handles the
-conversation in real time and hands real work to your agents.
-
-More: [architecture](docs/architecture.md) · [protocol](docs/protocol.md) ·
-[voice AI](docs/voice.md)
-
-## Quickstart
-
-You need:
+Everything on your own machines, free and without limits. You need:
 - somewhere to run the relay: a Linux server with Docker and a domain name, **or** your own
   computer with Docker (the phone on the same Wi-Fi, or anywhere over Tailscale),
 - a free Firebase project, which is what makes a locked phone ring ([docs/firebase.md](docs/firebase.md)),
-- a Gemini API key for the voice AI ([free tier](https://aistudio.google.com/apikey)),
+- a key for the voice AI: Gemini ([free tier](https://aistudio.google.com/apikey)), or OpenAI,
+  xAI (Grok) or Phonic ([providers](docs/voice.md#providers)),
 - an Android phone.
 
 ```bash
@@ -97,25 +105,64 @@ uv tool install './daemon[voice]'
 agentring init --relay https://relay.example.com --api-key ak_...
 agentring pair                         # scan the QR code with the app
 agentring msg "hello"                  # the phone gets a notification
-echo GEMINI_API_KEY=... >> ~/.agentring/.env
-agentring call "Testing agentring" --ai
+echo GEMINI_API_KEY=... >> ~/.agentring/.env  # or OPENAI_API_KEY / XAI_API_KEY / PHONIC_API_KEY
+agentring call "Testing agentring" --ai       # + --provider openai|grok|phonic
 
 # 3. Your agent (Claude Code here; others: docs/agents.md)
 claude mcp add agentring -- agentring mcp
 ```
 
-Get the app from [Releases](https://github.com/mutonby/agentring/releases). The full
+Install the app from **[Google Play](https://play.google.com/store/apps/details?id=dev.agentring.app&referrer=utm_source%3Dgithub%26utm_medium%3Dreadme)**
+(recommended: it updates itself, and the same app works with agentring cloud and with your
+own relay). The APK on [Releases](https://github.com/mutonby/agentring/releases) is for
+those who'd rather not use Play; it's signed with a different key, so uninstall one before
+installing the other. The full
 tutorial, step by step for both options and with a troubleshooting table:
 **[docs/setup.md](docs/setup.md)**. If the phone doesn't ring when locked, it's usually the
 vendor's battery saver: [docs/troubleshooting-oem.md](docs/troubleshooting-oem.md).
 
+## How it works
+
+```
+ your agent ──MCP/CLI──▶ daemon ──WSS (outbound only)──▶ relay ──FCM push──▶ Android app
+     ▲                     │                      (your server)                   │
+     └── agents.yaml ◀── voice AI (realtime) ◀──────── LiveKit (call audio) ───────┘
+```
+
+- **relay** (TypeScript): pairing, messages, call state, push, LiveKit tokens. Runs on
+  your server behind Caddy.
+- **LiveKit**: the call audio, self-hosted in the same compose file.
+- **daemon** (Python): the `agentring` CLI, the MCP server and the voice AI. Runs next
+  to your agents, behind NAT is fine.
+- **Android app** (Kotlin): QR pairing, the native call screen, messages.
+
+The voice AI is the voice, your agent is the brain: a realtime speech model handles
+the conversation and hands real work to your agents. Pick the one you like:
+
+| Voice AI | `--provider` | Key |
+|---|---|---|
+| [Gemini Live](https://ai.google.dev/gemini-api/docs/live) (default, free tier) | `gemini` | `GEMINI_API_KEY` |
+| [OpenAI Realtime](https://developers.openai.com/api/docs/guides/realtime-conversations) | `openai` | `OPENAI_API_KEY` |
+| [Grok Voice](https://docs.x.ai/docs/guides/voice/agent) (xAI) | `grok` | `XAI_API_KEY` |
+| [Phonic](https://docs.phonic.ai) | `phonic` | `PHONIC_API_KEY` |
+| Your own server, e.g. [HF speech-to-speech](https://github.com/huggingface/speech-to-speech) + a small model on llama.cpp (experimental) | `local` | none |
+
+Set `AGENTRING_VOICE_PROVIDER` in `~/.agentring/.env` to use one for every call, from the
+CLI and from MCP. How they compare (latency, tool use), how to measure them yourself
+(`agentring voice bench`), the local setup and how to add another one:
+[docs/voice.md](docs/voice.md#providers).
+
+More: [architecture](docs/architecture.md) · [protocol](docs/protocol.md) ·
+[voice AI](docs/voice.md)
+
 ## Privacy and security
 
-Everything runs on your own servers and accounts. Messages and call metadata are stored
+Self-hosted, everything runs on your own servers and accounts (for the hosted version,
+see its [privacy policy](https://agentring.io/privacy)). Messages and call metadata are stored
 on your relay. Push notifications go through your own Firebase project; they are
 signed, not encrypted, so Google's FCM can read pushed text. Call audio goes through
-your LiveKit server and, with the voice AI, to Gemini; on Google's free tier, Google may
-use that data to improve its products.
+your LiveKit server and, with the voice AI, to the provider you chose (Google, OpenAI,
+xAI or Phonic); on Google's free tier, Google may use that data to improve its products.
 
 Over the phone, the voice AI acts on what it hears, so give it only the tools and
 agents you'd trust someone holding your phone with. Details and the threat model:
@@ -123,10 +170,23 @@ agents you'd trust someone holding your phone with. Details and the threat model
 
 ## Limitations
 
-- Android only (no iOS yet).
-- One user per relay: no accounts.
-- The voice AI uses Gemini Live; other realtime backends plug in through
-  [`RealtimeBackend`](docs/voice.md).
+- Android only (no iOS yet). Android Auto is in beta and only in the APK from Releases:
+  Google Play doesn't allow calling apps for cars in production yet
+  ([docs/android-auto.md](docs/android-auto.md)).
+- It's a young project. The app is on Google Play, and we test it most on a Pixel 6
+  (Android 16); other vendors' battery savers can hold a call back
+  ([docs/troubleshooting-oem.md](docs/troubleshooting-oem.md)). If it misbehaves on your
+  phone, please open an issue.
+- Self-hosted, one user per relay: no accounts.
+- The voice AI works best with a cloud realtime model (Gemini, OpenAI, Grok or Phonic). A local
+  one runs on your own machine (`--provider local`), but it's experimental and slower; others
+  plug in through [`RealtimeBackend`](docs/voice.md#backends).
+
+## iOS preview
+
+A native SwiftUI iPhone companion and APNs relay transport are included in source.
+Build with Xcode and your Apple signing/push credentials; see [docs/ios.md](docs/ios.md).
+The Android quickstart above remains unchanged.
 
 ## Development
 

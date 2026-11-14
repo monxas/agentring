@@ -2,8 +2,9 @@ import type { FastifyInstance } from "fastify";
 import type { Principal } from "../auth.js";
 import { type Ctx, principal, requireAuth } from "../context.js";
 import { ApiError, forbidden, notFound } from "../errors.js";
-import { newId } from "../ids.js";
+import { newId, wellFormed } from "../ids.js";
 import type { Event, Schemas } from "../protocol.js";
+import { callMsLeft, checkCall, checkCallRate } from "../quota.js";
 
 type Call = Schemas["Call"];
 type CallState = Schemas["CallState"];
@@ -58,7 +59,8 @@ export function callFromRow(r: CallRow): Call {
   };
 }
 
-export const roomName = (callId: string) => callId;
+/** LiveKit room of a call; hub mode prefixes it with the tenant (one LiveKit for every tenant). */
+export const roomName = (ctx: Pick<Ctx, "roomPrefix">, callId: string) => ctx.roomPrefix + callId;
 const identityOf = (p: Principal) => (p.kind === "agent" ? "agent" : `device_${p.deviceId}`);
 /** Which side placed the call. */
 const callerKind = (d: Direction) => (d === "agent_to_user" ? "agent" : "device");
@@ -85,10 +87,18 @@ const notForThisDevice = () => forbidden("This call is for other devices");
 type PartState = "ringing" | "joined" | "declined" | "missed" | "left";
 /** LiveKit reports join times in its own clock (second precision on older servers). */
 const JOIN_CLOCK_SLACK_MS = 2_000;
+/** How often an active call is re-checked against the tenant's call-time limit, at most. */
+const QUOTA_CHECK_MS = 60_000;
+/** How soon a timer that failed (e.g. a database error) tries again. */
+const TIMER_RETRY_MS = 5_000;
+/** How long an empty room outlives the ring window. */
+const ROOM_GRACE_S = 30;
 export class Calls {
   private readonly timers = new Map<string, NodeJS.Timeout>();
   /** Devices that already reported `ringing`, so the event is emitted once per device. */
   private readonly ringingDevices = new Map<string, Set<string>>();
+  /** Hub mode: ends an active call when the tenant's call minutes run out. */
+  private readonly quotaTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(private readonly ctx: Ctx) {}
 
@@ -105,7 +115,10 @@ export class Calls {
   /** After a restart: time out calls that expired while we were down and re-arm the others. */
   resume(): void {
     const open = this.ctx.db.prepare("SELECT * FROM calls WHERE state IN ('ringing','active')").all() as unknown as CallRow[];
-    for (const c of open) this.armTimer(c);
+    for (const c of open) {
+      this.armTimer(c);
+      if (c.state === "active") this.armQuota(c.call_id);
+    }
   }
 
   private part(callId: string, deviceId: string): PartState | undefined {
@@ -135,8 +148,44 @@ export class Calls {
   }
 
   stop(): void {
-    for (const t of this.timers.values()) clearTimeout(t);
+    for (const t of [...this.timers.values(), ...this.quotaTimers.values()]) clearTimeout(t);
     this.timers.clear();
+    this.quotaTimers.clear();
+  }
+
+  /**
+   * The call just became active: if the tenant has a call-time limit, end the call when
+   * it runs out. The timer wakes at least every QUOTA_CHECK_MS, so a lowered limit, a new
+   * month or a raised limit (an upgrade) are all picked up during the call.
+   */
+  private armQuota(callId: string): void {
+    const left = callMsLeft(this.ctx.db, this.ctx.limits());
+    if (left === undefined || this.quotaTimers.has(callId)) return;
+    if (left < 1000) {
+      this.finish(callId, "active", "ended", "relay", "quota");
+      return;
+    }
+    const t = setTimeout(() => {
+      this.quotaTimers.delete(callId);
+      try {
+        if (this.get(callId)?.state === "active") this.armQuota(callId);
+      } catch (err) {
+        // Timers run outside any request: an error here would end the whole process.
+        this.ctx.log.error({ err, call: callId }, "call quota check failed");
+      }
+    }, Math.min(left, QUOTA_CHECK_MS));
+    t.unref();
+    this.quotaTimers.set(callId, t);
+  }
+
+  /** Limits changed (hub admin API): re-check the active call against them now. */
+  limitsChanged(): void {
+    for (const id of [...this.quotaTimers.keys()]) {
+      clearTimeout(this.quotaTimers.get(id));
+      this.quotaTimers.delete(id);
+    }
+    const c = this.open();
+    if (c?.state === "active") this.armQuota(c.call_id);
   }
 
   /** Whether a device may see this event; events of a targeted call only reach its phones. */
@@ -160,15 +209,17 @@ export class Calls {
       throw new ApiError(503, "agent_offline", "The agent is not connected");
     }
     if (this.open()) throw new ApiError(409, "busy", "Another call is ringing or active");
+    checkCall(this.ctx.db, this.ctx.limits());
+    checkCallRate(this.ctx.db, this.ctx.limits());
 
     const now = Date.now();
     const row: CallRow = {
       call_id: newId("call"),
       direction,
       state: "ringing",
-      reason: body.reason ?? "",
+      reason: wellFormed(body.reason ?? ""),
       priority: body.priority ?? "normal",
-      agent_name: (p.kind === "agent" ? body.agent_name : undefined) ?? this.ctx.cfg.agentName,
+      agent_name: wellFormed((p.kind === "agent" ? body.agent_name : undefined) ?? this.ctx.cfg.agentName),
       created_at: now,
       expires_at: now + this.ctx.cfg.ringTimeoutS * 1000,
       answered_at: null,
@@ -256,6 +307,7 @@ export class Calls {
       .run(now, callId);
     if (res.changes !== 1) throw invalidState(this.get(callId)!.state);
     this.settle(callId);
+    this.armQuota(callId);
     this.ctx.events.emit({ type: "call.accept", call_id: callId, by: "agent" });
     return this.get(callId)!;
   }
@@ -287,6 +339,7 @@ export class Calls {
       this.ctx.db
         .prepare("UPDATE calls SET state = 'active', answered_at = ?, device_id = ? WHERE call_id = ? AND state = 'ringing'")
         .run(Date.now(), deviceId, c.call_id);
+      this.armQuota(c.call_id);
     }
     this.setPart(c.call_id, deviceId, "joined");
     this.ringingDevices.get(c.call_id)?.delete(deviceId);
@@ -333,13 +386,16 @@ export class Calls {
    */
   end(callId: string, p: Principal): CallRow {
     const c = this.get(callId);
-    if (!c) throw notFound("Call");
+    if (!c || !canSee(c, p)) throw notFound("Call");
     const by = p.kind === "agent" ? "agent" : "user";
+    // A call to the agent belongs to the phone that placed it.
+    const foreignPhone = p.kind === "device" && c.direction === "user_to_agent" && c.device_id !== p.deviceId;
     if (c.state === "ringing") {
-      if (p.kind !== callerKind(c.direction)) throw forbidden("Decline a ringing call instead of ending it");
+      if (p.kind !== callerKind(c.direction) || foreignPhone) throw forbidden("Decline a ringing call instead of ending it");
       return this.finish(callId, "ringing", "canceled", by, "canceled") ?? this.get(callId)!;
     }
     if (c.state !== "active") return c;
+    if (foreignPhone) throw forbidden("This device is not on the call");
     if (p.kind === "device" && c.direction === "agent_to_user") {
       const prev = this.part(callId, p.deviceId);
       if (prev === "ringing") return this.decline(callId, p);
@@ -367,6 +423,33 @@ export class Calls {
     this.finish(callId, "active", "ended", "relay", "room_closed");
   }
 
+  /**
+   * A phone was revoked. A phone on the call may hold a join token LiveKit keeps
+   * refreshing, and only closing the room takes that away, so the call ends. One that
+   * is only ringing has no token: it just stops counting.
+   */
+  deviceRevoked(deviceId: string): void {
+    const c = this.open();
+    if (!c) return;
+    const part = this.part(c.call_id, deviceId);
+    if (part === "joined") {
+      if (c.state === "ringing") this.finish(c.call_id, "ringing", "canceled", "relay", "canceled");
+      else this.finish(c.call_id, "active", "ended", "relay", "room_closed");
+    } else if (part === "ringing") {
+      this.setPart(c.call_id, deviceId, "missed");
+      if (c.state === "ringing" && this.countParts(c.call_id, "ringing", "joined") === 0) {
+        this.finish(c.call_id, "ringing", "canceled", "relay", "canceled");
+      }
+    }
+  }
+
+  /** Ends whatever call is open, e.g. when the tenant is disabled or deleted. */
+  terminateOpen(): void {
+    const c = this.open();
+    if (c?.state === "ringing") this.finish(c.call_id, "ringing", "canceled", "relay", "canceled");
+    else if (c?.state === "active") this.finish(c.call_id, "active", "ended", "relay", "room_closed");
+  }
+
   private leave(callId: string, deviceId: string, by: Schemas["Actor"], reason: Schemas["EndReason"]): CallRow {
     this.setPart(callId, deviceId, "left");
     const c = this.get(callId)!;
@@ -390,6 +473,8 @@ export class Calls {
       .run(to, now, by, reason, callId, from);
     if (res.changes !== 1) return undefined;
     this.settle(callId);
+    clearTimeout(this.quotaTimers.get(callId));
+    this.quotaTimers.delete(callId);
     const row = this.get(callId)!;
     this.ctx.events.emit({
       type: "call.end",
@@ -410,8 +495,16 @@ export class Calls {
     return c;
   }
 
-  private armTimer(c: CallRow): void {
-    const t = setTimeout(() => this.timeout(c.call_id), Math.max(0, c.expires_at - Date.now()));
+  private armTimer(c: CallRow, delayMs = Math.max(0, c.expires_at - Date.now())): void {
+    const t = setTimeout(() => {
+      try {
+        this.timeout(c.call_id);
+      } catch (err) {
+        // Timers run outside any request: an error here would end the whole process.
+        this.ctx.log.error({ err, call: c.call_id }, "call timer failed");
+        this.armTimer(c, TIMER_RETRY_MS);
+      }
+    }, delayMs);
     t.unref();
     this.timers.set(c.call_id, t);
   }
@@ -449,7 +542,7 @@ export class Calls {
   private closeRoom(callId: string): void {
     const lk = this.ctx.livekit;
     if (!lk) return;
-    lk.deleteRoom(roomName(callId)).catch(() => undefined);
+    lk.deleteRoom(roomName(this.ctx, callId)).catch(() => undefined);
   }
 }
 
@@ -470,7 +563,7 @@ export function callRoutes(app: FastifyInstance, ctx: Ctx, calls: Calls): void {
     return ctx.livekit;
   };
   const joinFor = (callId: string, p: Principal) =>
-    livekit().join(roomName(callId), identityOf(p), p.kind === "agent" ? ctx.cfg.agentName : "user");
+    livekit().join(roomName(ctx, callId), identityOf(p), p.kind === "agent" ? ctx.cfg.agentName : "user");
 
   app.post<{ Body: Schemas["CreateCallRequest"] }>(
     "/v1/calls",
@@ -500,7 +593,9 @@ export function callRoutes(app: FastifyInstance, ctx: Ctx, calls: Calls): void {
       const row = calls.create(p, req.body ?? {});
       // The push is already on its way; create the room and the caller's token meanwhile.
       const [, join] = await Promise.all([
-        lk.createRoom(roomName(row.call_id)).catch((err: unknown) => req.log.warn({ err }, "could not pre-create room")),
+        lk
+          .createRoom(roomName(ctx, row.call_id), ctx.cfg.ringTimeoutS + ROOM_GRACE_S)
+          .catch((err: unknown) => req.log.warn({ err }, "could not create room")),
         joinFor(row.call_id, p),
       ]);
       req.log.info({ call: row.call_id, direction: row.direction, priority: row.priority }, "call created");
@@ -605,7 +700,7 @@ export function callRoutes(app: FastifyInstance, ctx: Ctx, calls: Calls): void {
         throw new ApiError(401, "unauthorized", "Bad webhook signature");
       }
       const room = event.room?.name;
-      const c = room ? calls.get(room) : undefined;
+      const c = room?.startsWith(ctx.roomPrefix) ? calls.get(room.slice(ctx.roomPrefix.length)) : undefined;
       if (c?.state === "active") {
         const identity = event.participant?.identity ?? "";
         const left = event.event === "participant_left";

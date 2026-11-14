@@ -17,8 +17,11 @@ export interface Config {
   /** Explicit API key from env; otherwise one is generated and persisted. */
   apiKey?: string;
   ringTimeoutS: number;
+  /** Reverse proxies in front of the relay; the client address is read that many hops from the right of X-Forwarded-For. */
+  trustedProxies?: number;
   insecureDev: boolean;
   livekit?: LiveKitConfig;
+  apns?: { keyFile: string; keyId: string; teamId: string; bundleId: string };
   fcm?: {
     serviceAccountFile: string;
     client: FcmClientConfig;
@@ -71,6 +74,17 @@ export function parseGoogleServices(json: unknown, pkg = ANDROID_PACKAGE): FcmCl
   return out;
 }
 
+/** Fastify's `trustProxy`: trust exactly that many hops, nearest first. */
+export function trustedHops(cfg: Pick<Config, "trustedProxies">): (address: string, hop: number) => boolean {
+  const hops = cfg.trustedProxies ?? 1;
+  return (_address, hop) => hop < hops;
+}
+
+function trustedProxies(value: string): number {
+  if (!/^\d+$/.test(value)) throw new Error(`AGENTRING_TRUSTED_PROXIES must be a number of proxies (got ${value})`);
+  return Number(value);
+}
+
 export function loadConfig(): Config {
   const dataDir = env("AGENTRING_DATA_DIR", "./data")!;
   const port = Number(env("PORT", "8080"));
@@ -94,6 +108,17 @@ export function loadConfig(): Config {
       client: parseGoogleServices(JSON.parse(readFileSync(gsFile, "utf8"))),
       apiBase: env("FCM_API_BASE", "https://fcm.googleapis.com")!,
     };
+  }
+
+  let apns: Config["apns"];
+  const apnsKey = env("APNS_KEY_FILE");
+  const apnsKeyId = env("APNS_KEY_ID");
+  const apnsTeam = env("APNS_TEAM_ID");
+  const apnsBundle = env("APNS_BUNDLE_ID");
+  if (apnsKey || apnsKeyId || apnsTeam || apnsBundle) {
+    if (!apnsKey || !apnsKeyId || !apnsTeam || !apnsBundle)
+      throw new Error("Set APNS_KEY_FILE, APNS_KEY_ID, APNS_TEAM_ID and APNS_BUNDLE_ID together");
+    apns = { keyFile: apnsKey, keyId: apnsKeyId, teamId: apnsTeam, bundleId: apnsBundle };
   }
 
   let livekit: LiveKitConfig | undefined;
@@ -124,8 +149,10 @@ export function loadConfig(): Config {
     agentName: env("AGENTRING_AGENT_NAME", "Agent")!,
     apiKey: env("AGENTRING_API_KEY"),
     ringTimeoutS: Number(env("AGENTRING_RING_TIMEOUT_S", "30")),
+    trustedProxies: trustedProxies(env("AGENTRING_TRUSTED_PROXIES", "1")!),
     insecureDev,
     fcm,
+    apns,
     livekit,
   };
 }

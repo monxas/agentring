@@ -2,8 +2,9 @@ import type { FastifyInstance } from "fastify";
 import { partyOf } from "../auth.js";
 import { type Ctx, principal, requireAuth } from "../context.js";
 import { notFound } from "../errors.js";
-import { newId } from "../ids.js";
+import { newId, wellFormed } from "../ids.js";
 import type { Message, Party } from "../protocol.js";
+import { checkMessage } from "../quota.js";
 
 interface MessageRow {
   msg_id: string;
@@ -57,7 +58,9 @@ export function messageRoutes(app: FastifyInstance, ctx: Ctx): void {
     async (req, reply) => {
       const p = principal(req);
       const from = partyOf(p);
-      const { text, reply_to, client_msg_id } = req.body;
+      const { client_msg_id } = req.body;
+      const text = wellFormed(req.body.text);
+      const reply_to = req.body.reply_to === undefined ? undefined : wellFormed(req.body.reply_to);
 
       if (client_msg_id) {
         const existing = db
@@ -65,6 +68,7 @@ export function messageRoutes(app: FastifyInstance, ctx: Ctx): void {
           .get(from, client_msg_id) as unknown as MessageRow | undefined;
         if (existing) return reply.code(201).send(fromRow(existing));
       }
+      checkMessage(db, ctx.limits());
 
       const row: MessageRow = {
         msg_id: newId("msg"),

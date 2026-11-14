@@ -12,13 +12,18 @@
 | **device** (the phone) | `device_jwt` (HS256, `iss`=`relay_id`, `sub`=`device_id`, `aud`=`device`) | `Authorization: Bearer eyJ…` |
 | LiveKit server | LiveKit webhook signature | `Authorization: <livekit jwt>` |
 
-The relay tells credentials apart by prefix (`ak_`) vs JWT shape. TLS is
+In hub mode the agent may also use a short-lived agent token `at_…` issued by the
+hub admin API ([cloud.md](cloud.md#admin-api)); it works like the API key until it
+expires.
+
+The relay tells credentials apart by prefix (`ak_`, `at_`) vs JWT shape. TLS is
 mandatory in production; the relay refuses to start with a non-`https` public
 URL unless `AGENTRING_INSECURE_DEV=1`.
 
 Every device request re-checks the device row, so `DELETE /v1/devices/{id}`
 revokes immediately (REST returns 401, open WebSockets are closed with code
-4401).
+4401). A phone on the open call also ends that call: its room closes, which is
+what takes back a join token LiveKit keeps refreshing.
 
 ## Identifiers and time
 
@@ -290,8 +295,8 @@ they can answer, decline or join it; the group-call rules above apply among them
 Every other phone gets no event or push for it, so it never rings or offers
 "join", even with an old app: the filtering is done by the relay. For those
 phones the call does not exist: `GET /v1/calls/{call_id}` is `404`, it is left
-out of `GET /v1/calls` and of `active_call` in `GET /v1/status`, and
-`accept` / `decline` / `join` are `403 forbidden` (`ringing` is ignored). It
+out of `GET /v1/calls` and of `active_call` in `GET /v1/status`, `end` is `404`
+too, and `accept` / `decline` / `join` are `403 forbidden` (`ringing` is ignored). It
 still blocks new calls while it rings or is active (`409 busy`, one call at a
 time). The `Call` object and the `call.invite` event carry `device_ids`.
 
@@ -308,6 +313,15 @@ compares the session's join time with the phone's latest join.
 - Live transcript: not implemented yet. The daemon keeps the transcript of AI calls
   (`agentring call --ai --json`, the MCP `call` tool); the app does not show it.
 
+### Hosted relays (hub mode)
+
+A hosted relay (docs/cloud.md) serves each tenant under a base URL with a path,
+`https://host/t/{tenant_id}`; clients append `/v1/...` to it as usual. It may refuse
+`POST /v1/pair`, `/v1/calls` and `/v1/messages` with `402 quota_exceeded` when the
+plan's limit is reached, end an active call with `end_reason: "quota"` when the call
+minutes run out, and answer `403 tenant_disabled` for a disabled account. A
+self-hosted relay never does any of this.
+
 ## Daemon local HTTP API (M5, sketch)
 
 Bound to `127.0.0.1:7878` by default, `Authorization: Bearer <local key>`.
@@ -320,3 +334,19 @@ Bound to `127.0.0.1:7878` by default, `Authorization: Bearer <local key>`.
 | GET | `/calls/{id}` | | `{call_id, status, duration_ms?, summary?, transcript?}` |
 
 The MCP streamable-HTTP transport is mounted on the same server at `/mcp`.
+
+## iOS transport extension
+
+PairRequest and Device accept `platform: ios`. iOS pairing returns `push_config: null`
+because Apple push registration uses the app's signing entitlements. A paired iOS
+device replaces its APNs tokens with `POST /v1/device/apns` (device JWT):
+`{alert_token: string|null, voip_token: string|null, environment: sandbox|production}`.
+Null clears a token. Android and agent credentials cannot register APNs tokens.
+Revocation clears both tokens. `has_push_token` includes either Apple token.
+
+Only agent-to-user `call.invite` goes to the VoIP token; agent messages go to the
+alert token. Both carry the existing signed PushData fields as APNs custom keys.
+All remaining events use the existing authenticated WebSocket. APNs expiration is
+zero. Token environment is stored per device so development and production builds
+can coexist. Targeted-call filtering applies before dispatch to either transport.
+See [iOS setup](ios.md) for CallKit behavior and preview limitations.
